@@ -1,0 +1,17 @@
+{
+  "$id": "job.created.v1",
+  "type": "object",
+  "required": ["job_id", "customer_id", "location", "created_at"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "customer_id": { "type": "string", "format": "uuid" },
+    "location": {
+      "type": "object",
+      "properties": {
+        "lat": { "type": "number" },
+        "lng": { "type": "number" }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

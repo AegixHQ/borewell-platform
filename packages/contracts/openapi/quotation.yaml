@@ -1,0 +1,57 @@
+openapi: 3.0.3
+info:
+  title: quotation
+  version: "1.0"
+  description: Location Intelligence & Estimation Engine, Quotation/Pricing Engine
+paths:
+  /v1/quotations:
+    post:
+      summary: Generate a quotation for a job
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, location, job_type]
+              properties:
+                job_id: { type: string, format: uuid }
+                location:
+                  type: object
+                  properties:
+                    lat: { type: number }
+                    lng: { type: number }
+                job_type: { type: string, enum: [residential, agricultural, commercial] }
+      responses:
+        '200':
+          description: Quotation generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quotation_id: { type: string, format: uuid }
+                  estimated_depth_range:
+                    type: object
+                    properties:
+                      min_ft: { type: number }
+                      max_ft: { type: number }
+                      confidence: { type: string, enum: [low, medium, high] }
+                  line_items:
+                    type: array
+                    items: { type: object }
+                  total_estimate: { type: number }
+  /v1/quotations/{quotation_id}:
+    get:
+      summary: Retrieve an existing quotation
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Quotation
+          content:
+            application/json:
+              schema:
+                type: object

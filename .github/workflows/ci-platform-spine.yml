@@ -1,0 +1,26 @@
+name: CI - platform-spine
+
+on:
+  push:
+    paths:
+      - 'services/platform-spine/**'
+      - 'packages/contracts/openapi/platform-spine.yaml'
+  pull_request:
+    paths:
+      - 'services/platform-spine/**'
+      - 'packages/contracts/openapi/platform-spine.yaml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        working-directory: services/platform-spine
+        run: pip install -e ".[dev]"
+      - name: Run tests
+        working-directory: services/platform-spine
+        run: pytest

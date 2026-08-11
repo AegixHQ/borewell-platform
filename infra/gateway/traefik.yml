@@ -1,0 +1,18 @@
+# Placeholder gateway routing config.
+# Routes /platform-spine/*, /quotation/*, /resources/*, /payments/* to the
+# corresponding service. Auth token validation happens here once, not
+# per-service. Fill in once a real gateway (Traefik/nginx) is chosen.
+http:
+  routers:
+    platform-spine:
+      rule: "PathPrefix(`/platform-spine`)"
+      service: platform-spine
+    quotation:
+      rule: "PathPrefix(`/quotation`)"
+      service: quotation
+    resource-network:
+      rule: "PathPrefix(`/resources`)"
+      service: resource-network
+    payments-data:
+      rule: "PathPrefix(`/payments`)"
+      service: payments-data

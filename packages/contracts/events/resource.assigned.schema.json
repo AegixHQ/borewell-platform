@@ -1,0 +1,10 @@
+{
+  "$id": "resource.assigned.v1",
+  "type": "object",
+  "required": ["job_id", "resource_id", "assigned_at"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "resource_id": { "type": "string", "format": "uuid" },
+    "assigned_at": { "type": "string", "format": "date-time" }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$id": "payment.completed.v1",
+  "type": "object",
+  "required": ["payment_id", "job_id", "amount", "completed_at"],
+  "properties": {
+    "payment_id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "amount": { "type": "number" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

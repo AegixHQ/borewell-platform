@@ -1,0 +1,72 @@
+openapi: 3.0.3
+info:
+  title: platform-spine
+  version: "1.0"
+  description: Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing
+paths:
+  /v1/auth/login:
+    post:
+      summary: Authenticate and receive a JWT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  role: { type: string, enum: [customer, contractor, resource_owner, admin] }
+  /v1/jobs:
+    post:
+      summary: Create a new job (lead)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, location]
+              properties:
+                customer_id: { type: string, format: uuid }
+                location:
+                  type: object
+                  properties:
+                    lat: { type: number }
+                    lng: { type: number }
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string, format: uuid }
+                  status: { type: string, enum: [lead, site_location, requirement, estimation, price_calculation, quotation, customer_approval, booking, resource_allocation, drilling, progress, completion, payment, service_history] }
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get current job state
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Job state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string, format: uuid }
+                  status: { type: string }

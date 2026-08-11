@@ -1,0 +1,39 @@
+openapi: 3.0.3
+info:
+  title: payments-data
+  version: "1.0"
+  description: Payments & Split Settlement, Data & Analytics
+paths:
+  /v1/payments:
+    post:
+      summary: Collect a customer payment for a job
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, amount]
+              properties:
+                job_id: { type: string, format: uuid }
+                amount: { type: number }
+                idempotency_key: { type: string }
+      responses:
+        '200':
+          description: Payment recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payment_id: { type: string, format: uuid }
+                  status: { type: string, enum: [pending, completed, failed] }
+  /v1/analytics/estimate-accuracy:
+    get:
+      summary: Variance between quoted and actual cost/depth, by region
+      responses:
+        '200':
+          description: Aggregated variance report
+          content:
+            application/json:
+              schema:
+                type: object

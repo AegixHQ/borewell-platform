@@ -1,0 +1,11 @@
+{
+  "$id": "job.quoted.v1",
+  "type": "object",
+  "required": ["job_id", "quotation_id", "total_estimate", "quoted_at"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "quotation_id": { "type": "string", "format": "uuid" },
+    "total_estimate": { "type": "number" },
+    "quoted_at": { "type": "string", "format": "date-time" }
+  }
+}

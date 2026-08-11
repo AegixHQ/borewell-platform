@@ -1,0 +1,8 @@
+export default function App() {
+  return (
+    <div>
+      <h1>Resource Owner App</h1>
+      <p>Borewell Platform — scaffold. Talks to services via the API Gateway (see infra/gateway).</p>
+    </div>
+  );
+}

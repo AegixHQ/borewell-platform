@@ -1,0 +1,12 @@
+{
+  "$id": "job.completed.v1",
+  "type": "object",
+  "required": ["job_id", "actual_depth_ft", "actual_cost", "completed_at"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "actual_depth_ft": { "type": "number" },
+    "actual_cost": { "type": "number" },
+    "resources_used": { "type": "array", "items": { "type": "string" } },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

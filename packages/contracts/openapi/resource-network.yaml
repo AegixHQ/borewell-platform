@@ -1,0 +1,54 @@
+openapi: 3.0.3
+info:
+  title: resource-network
+  version: "1.0"
+  description: Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media Storage
+paths:
+  /v1/resources:
+    get:
+      summary: List resources with optional availability/location filters
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [available, on_job, maintenance] }
+      responses:
+        '200':
+          description: Resource list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    resource_id: { type: string, format: uuid }
+                    type: { type: string, enum: [rig, equipment, labour] }
+                    status: { type: string }
+  /v1/resources/match:
+    post:
+      summary: Get ranked resource suggestions for a job's requirements
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, requirements]
+              properties:
+                job_id: { type: string, format: uuid }
+                requirements:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Ranked suggestions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    resource_id: { type: string, format: uuid }
+                    provider: { type: string }
+                    cost: { type: number }
+                    distance_km: { type: number }

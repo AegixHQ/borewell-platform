@@ -1,0 +1,93 @@
+version: "3.9"
+
+services:
+  postgres-platform-spine:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: platform_spine
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: borewell
+    volumes:
+      - pg_platform_spine:/var/lib/postgresql/data
+
+  postgres-quotation:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: quotation
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: borewell
+    volumes:
+      - pg_quotation:/var/lib/postgresql/data
+
+  postgres-resource-network:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: resource_network
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: borewell
+    volumes:
+      - pg_resource_network:/var/lib/postgresql/data
+
+  postgres-payments-data:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payments_data
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: borewell
+    volumes:
+      - pg_payments_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  platform-spine:
+    build: ./services/platform-spine
+    depends_on:
+      - postgres-platform-spine
+      - redis
+    environment:
+      DATABASE_URL: postgresql://borewell:borewell@postgres-platform-spine:5432/platform_spine
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8000"
+
+  quotation:
+    build: ./services/quotation
+    depends_on:
+      - postgres-quotation
+      - redis
+    environment:
+      DATABASE_URL: postgresql://borewell:borewell@postgres-quotation:5432/quotation
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8002:8000"
+
+  resource-network:
+    build: ./services/resource-network
+    depends_on:
+      - postgres-resource-network
+      - redis
+    environment:
+      DATABASE_URL: postgresql://borewell:borewell@postgres-resource-network:5432/resource_network
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8003:8000"
+
+  payments-data:
+    build: ./services/payments-data
+    depends_on:
+      - postgres-payments-data
+      - redis
+    environment:
+      DATABASE_URL: postgresql://borewell:borewell@postgres-payments-data:5432/payments_data
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8004:8000"
+
+volumes:
+  pg_platform_spine:
+  pg_quotation:
+  pg_resource_network:
+  pg_payments_data:
