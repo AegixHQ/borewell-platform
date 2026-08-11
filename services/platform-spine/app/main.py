@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="platform-spine", version="0.1.0", description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing")
+app = FastAPI(
+    title="platform-spine",
+    version="0.1.0",
+    description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing",
+)
 
 
 @app.get("/healthz")

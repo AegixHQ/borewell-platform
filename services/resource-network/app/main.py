@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="resource-network", version="0.1.0", description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media Storage")
+app = FastAPI(
+    title="resource-network",
+    version="0.1.0",
+    description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media",
+)
 
 
 @app.get("/healthz")

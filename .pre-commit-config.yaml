@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: contract-check
+        name: contract conformance check (all services)
+        entry: bash -c 'for svc in platform-spine quotation resource-network payments-data; do python tools/contract-check/check_contract.py "$svc" || exit 1; done'
+        language: system
+        pass_filenames: false

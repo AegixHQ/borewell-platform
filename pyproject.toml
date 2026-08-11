@@ -1,0 +1,12 @@
+# Root-level config only - this is not an installable package.
+# Each service under services/<name>/ has its own pyproject.toml.
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["**/alembic/versions", "**/__pycache__", "**/node_modules"]
+
+[tool.ruff.lint]
+# F401/F841 catch unused imports/variables - the most common mechanical
+# signature of "AI added code nobody asked for and never wired up."
+# I001 (isort) keeps import blocks agents generate from drifting into a mess.
+select = ["E", "F", "I"]

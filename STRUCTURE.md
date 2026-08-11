@@ -49,6 +49,16 @@ achievable:
    template) and sign-off from all 4 service owners. It does not happen as a
    side effect of a feature PR.
 
+## Open proposals
+
+- `docs/adr/0001-developer-tooling-folder.md` proposes adding `tools/` as a
+  6th top-level folder for cross-cutting dev tooling (currently
+  `tools/contract-check/`). **Status: Proposed, not Accepted** — it exists
+  in the repo already because the tooling was needed immediately, but it
+  hasn't been ratified by all 4 owners yet. Don't treat its presence as
+  approval of the policy exception; that still requires actually reading
+  the ADR and signing off.
+
 ## When you're tempted to break this
 
 If a new feature doesn't fit cleanly into `services/` or `apps/`, that's a

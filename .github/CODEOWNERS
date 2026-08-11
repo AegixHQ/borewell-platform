@@ -1,0 +1,11 @@
+# Default reviewer until per-service owners are filled in below.
+# Replace the placeholders with Dev B/C/D's actual GitHub handles once assigned.
+* @Shrey-Arc
+
+/services/platform-spine/  @Shrey-Arc   # Dev A - TODO: replace
+/services/quotation/       @Shrey-Arc   # Dev B - TODO: replace
+/services/resource-network/ @Shrey-Arc  # Dev C - TODO: replace
+/services/payments-data/   @Shrey-Arc   # Dev D - TODO: replace
+
+/packages/contracts/ @Shrey-Arc   # contract changes need cross-team visibility
+/tools/               @Shrey-Arc   # provisional per ADR-0001, until ratified

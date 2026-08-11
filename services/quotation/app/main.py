@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="quotation", version="0.1.0", description="Location Intelligence and Estimation Engine, Quotation and Pricing Engine")
+app = FastAPI(
+    title="quotation",
+    version="0.1.0",
+    description="Location Intelligence and Estimation Engine, Quotation and Pricing Engine",
+)
 
 
 @app.get("/healthz")

@@ -5,10 +5,12 @@ on:
     paths:
       - 'services/resource-network/**'
       - 'packages/contracts/openapi/resource-network.yaml'
+      - 'tools/contract-check/**'
   pull_request:
     paths:
       - 'services/resource-network/**'
       - 'packages/contracts/openapi/resource-network.yaml'
+      - 'tools/contract-check/**'
 
 jobs:
   test:
@@ -18,9 +20,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
+      - name: Install service dependencies
         working-directory: services/resource-network
         run: pip install -e ".[dev]"
       - name: Run tests
         working-directory: services/resource-network
         run: pytest
+      - name: Lint (ruff) - catches unused imports, dead code
+        run: |
+          pip install ruff
+          ruff check services/resource-network
+      - name: Contract conformance check
+        run: |
+          pip install -r tools/contract-check/requirements.txt
+          python tools/contract-check/check_contract.py resource-network

@@ -5,10 +5,12 @@ on:
     paths:
       - 'services/payments-data/**'
       - 'packages/contracts/openapi/payments-data.yaml'
+      - 'tools/contract-check/**'
   pull_request:
     paths:
       - 'services/payments-data/**'
       - 'packages/contracts/openapi/payments-data.yaml'
+      - 'tools/contract-check/**'
 
 jobs:
   test:
@@ -18,9 +20,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
+      - name: Install service dependencies
         working-directory: services/payments-data
         run: pip install -e ".[dev]"
       - name: Run tests
         working-directory: services/payments-data
         run: pytest
+      - name: Lint (ruff) - catches unused imports, dead code
+        run: |
+          pip install ruff
+          ruff check services/payments-data
+      - name: Contract conformance check
+        run: |
+          pip install -r tools/contract-check/requirements.txt
+          python tools/contract-check/check_contract.py payments-data

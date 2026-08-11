@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="payments-data", version="0.1.0", description="Payments and Split Settlement, Data and Analytics")
+app = FastAPI(
+    title="payments-data",
+    version="0.1.0",
+    description="Payments and Split Settlement, Data and Analytics",
+)
 
 
 @app.get("/healthz")
