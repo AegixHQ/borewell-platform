@@ -4,6 +4,32 @@ info:
   version: "1.0"
   description: Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing
 paths:
+  /v1/auth/register:
+    post:
+      summary: Register a new user and receive a JWT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                phone: { type: string }
+                role: { type: string, enum: [customer, contractor, admin], default: customer }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  role: { type: string, enum: [customer, contractor, admin] }
+        '409':
+          description: Email already registered
   /v1/auth/login:
     post:
       summary: Authenticate and receive a JWT
@@ -25,36 +51,48 @@ paths:
                 type: object
                 properties:
                   access_token: { type: string }
-                  role: { type: string, enum: [customer, contractor, resource_owner, admin] }
+                  role: { type: string, enum: [customer, contractor, admin] }
+        '401':
+          description: Invalid credentials
   /v1/jobs:
     post:
-      summary: Create a new job (lead)
+      summary: Create a new job (lead). Customer role only.
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [customer_id, location]
+              required: [location, job_type]
               properties:
-                customer_id: { type: string, format: uuid }
                 location:
                   type: object
                   properties:
                     lat: { type: number }
                     lng: { type: number }
+                job_type: { type: string, enum: [residential, agricultural, commercial] }
       responses:
         '201':
           description: Job created
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  job_id: { type: string, format: uuid }
-                  status: { type: string, enum: [lead, site_location, requirement, estimation, price_calculation, quotation, customer_approval, booking, resource_allocation, drilling, progress, completion, payment, service_history] }
+                $ref: '#/components/schemas/Job'
+        '403':
+          description: Only customers may create jobs
+    get:
+      summary: List jobs visible to the current user (own jobs for customers, all jobs for contractor/admin)
+      responses:
+        '200':
+          description: Job list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Job'
   /v1/jobs/{job_id}:
     get:
-      summary: Get current job state
+      summary: Get a single job's current state
       parameters:
         - name: job_id
           in: path
@@ -62,11 +100,53 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: Job state
+          description: Job
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  job_id: { type: string, format: uuid }
-                  status: { type: string }
+                $ref: '#/components/schemas/Job'
+        '404':
+          description: Job not found
+  /v1/jobs/{job_id}/status:
+    patch:
+      summary: Advance a job to the next lifecycle status. Contractor/admin only, sequential transitions only.
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [lead, site_location, requirement, estimation, price_calculation, quotation, customer_approval, booking, resource_allocation, drilling, progress, completion, payment, service_history]
+      responses:
+        '200':
+          description: Job status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          description: Invalid transition (skips a state or moves backward)
+        '403':
+          description: Only contractor/admin may advance job status
+components:
+  schemas:
+    Job:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string }
+        job_type: { type: string }
+        location:
+          type: object
+          properties:
+            lat: { type: number }
+            lng: { type: number }
+        created_at: { type: string, format: date-time }

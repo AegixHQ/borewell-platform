@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint check-contracts
+.PHONY: up down logs test lint check-contracts migrate
 
 up:
 	docker compose up --build
@@ -23,3 +23,6 @@ check-contracts:
 		echo "== Checking $$svc against its contract =="; \
 		python tools/contract-check/check_contract.py $$svc || exit 1; \
 	done
+
+migrate:
+	cd services/platform-spine && alembic upgrade head

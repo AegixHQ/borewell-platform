@@ -11,6 +11,9 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "pydantic>=2.6",
     "redis>=5.0",
+    "pyjwt>=2.8",
+    "bcrypt>=4.1",
+    "email-validator>=2.1",
 ]
 
 [project.optional-dependencies]
