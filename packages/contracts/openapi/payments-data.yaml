@@ -2,38 +2,121 @@ openapi: 3.0.3
 info:
   title: payments-data
   version: "1.0"
-  description: Payments & Split Settlement, Data & Analytics
+  description: Payments and Split Settlement, Data and Analytics
 paths:
   /v1/payments:
     post:
-      summary: Collect a customer payment for a job
+      summary: Create a payment for an approved quotation. Idempotent by idempotency_key. Customer only.
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [job_id, amount]
+              required: [job_id, quotation_id, amount, idempotency_key]
               properties:
                 job_id: { type: string, format: uuid }
+                quotation_id: { type: string, format: uuid }
                 amount: { type: number }
                 idempotency_key: { type: string }
       responses:
-        '200':
-          description: Payment recorded
+        '201':
+          description: Payment created (or the existing one, if idempotency_key was already used)
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  payment_id: { type: string, format: uuid }
-                  status: { type: string, enum: [pending, completed, failed] }
-  /v1/analytics/estimate-accuracy:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          description: Quotation not approved, or amount does not match the approved total
+        '403':
+          description: Only customers may create payments
+        '502':
+          description: Could not reach the quotation service to verify the quotation
     get:
-      summary: Variance between quoted and actual cost/depth, by region
+      summary: List payments visible to the current user (own payments for customers, all for contractor/admin)
       responses:
         '200':
-          description: Aggregated variance report
+          description: Payment list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Payment'
+  /v1/payments/{payment_id}:
+    get:
+      summary: Get a single payment
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '403':
+          description: Not the owning customer
+        '404':
+          description: Payment not found
+  /v1/payments/{payment_id}/confirm:
+    post:
+      summary: "Placeholder for the real payment gateway webhook - admin-gated only until a real gateway is integrated (RFC 0001 section 7 open decision)"
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment marked completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '403':
+          description: Only admin may confirm (placeholder auth, see summary)
+        '404':
+          description: Payment not found
+  /v1/payments/{payment_id}/fail:
+    post:
+      summary: "Placeholder for the real payment gateway webhook failure callback - admin-gated only until a real gateway is integrated"
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment marked failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '403':
+          description: Only admin may mark failed (placeholder auth, see summary)
+        '404':
+          description: Payment not found
+  /v1/analytics/estimate-accuracy:
+    get:
+      summary: "NOT IMPLEMENTED YET - quoted-vs-actual variance reporting, US-11 (Should priority, not Must). Declared here so the contract documents the intended future shape."
+      responses:
+        '200':
+          description: Aggregated variance report (not implemented in MVP)
           content:
             application/json:
               schema:
                 type: object
+components:
+  schemas:
+    Payment:
+      type: object
+      properties:
+        payment_id: { type: string, format: uuid }
+        job_id: { type: string, format: uuid }
+        quotation_id: { type: string, format: uuid }
+        amount: { type: number }
+        status: { type: string, enum: [pending, completed, failed] }
+        created_at: { type: string, format: date-time }

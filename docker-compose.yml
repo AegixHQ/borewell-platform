@@ -63,6 +63,7 @@ services:
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-quotation:5432/quotation
       REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-only-secret-change-in-production
     ports:
       - "8002:8000"
 
@@ -74,6 +75,7 @@ services:
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-resource-network:5432/resource_network
       REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-only-secret-change-in-production
     ports:
       - "8003:8000"
 
@@ -85,6 +87,8 @@ services:
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-payments-data:5432/payments_data
       REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev-only-secret-change-in-production
+      QUOTATION_SERVICE_URL: http://quotation:8000
     ports:
       - "8004:8000"
 
