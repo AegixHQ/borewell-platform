@@ -2,11 +2,39 @@ openapi: 3.0.3
 info:
   title: quotation
   version: "1.0"
-  description: Location Intelligence & Estimation Engine, Quotation/Pricing Engine
+  description: Location Intelligence and Estimation Engine, Quotation and Pricing Engine
 paths:
+  /v1/pricing-rules:
+    post:
+      summary: Create or update a contractor's pricing rule for a job_type (upsert). Contractor only.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingRuleInput'
+      responses:
+        '200':
+          description: Pricing rule saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingRule'
+        '403':
+          description: Only contractors may configure pricing rules
+    get:
+      summary: List the current contractor's pricing rules
+      responses:
+        '200':
+          description: Pricing rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PricingRule'
   /v1/quotations:
     post:
-      summary: Generate a quotation for a job
+      summary: Generate a new quotation (version 1) for a job. Contractor only.
       requestBody:
         content:
           application/json:
@@ -22,27 +50,19 @@ paths:
                     lng: { type: number }
                 job_type: { type: string, enum: [residential, agricultural, commercial] }
       responses:
-        '200':
+        '201':
           description: Quotation generated
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  quotation_id: { type: string, format: uuid }
-                  estimated_depth_range:
-                    type: object
-                    properties:
-                      min_ft: { type: number }
-                      max_ft: { type: number }
-                      confidence: { type: string, enum: [low, medium, high] }
-                  line_items:
-                    type: array
-                    items: { type: object }
-                  total_estimate: { type: number }
+                $ref: '#/components/schemas/Quotation'
+        '400':
+          description: No pricing rule configured for this job_type
+        '403':
+          description: Only contractors may generate quotations
   /v1/quotations/{quotation_id}:
     get:
-      summary: Retrieve an existing quotation
+      summary: Retrieve a specific quotation version by ID
       parameters:
         - name: quotation_id
           in: path
@@ -54,4 +74,143 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/Quotation'
+        '404':
+          description: Quotation not found
+    patch:
+      summary: Edit a quotation's line items/total. Creates a new version rather than mutating the existing one. Contractor (owner) only.
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                line_items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      label: { type: string }
+                      amount: { type: number }
+                total_estimate: { type: number }
+      responses:
+        '201':
+          description: New quotation version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quotation'
+        '403':
+          description: Only the owning contractor may edit
+        '404':
+          description: Quotation not found
+  /v1/quotations/job/{job_id}/latest:
+    get:
+      summary: Get the latest quotation version for a job
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Latest quotation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quotation'
+        '404':
+          description: No quotation exists yet for this job
+  /v1/quotations/{quotation_id}/approve:
+    post:
+      summary: Customer approves a quotation
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Quotation approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quotation'
+        '403':
+          description: Only customers may approve
+        '404':
+          description: Quotation not found
+  /v1/quotations/{quotation_id}/reject:
+    post:
+      summary: Customer rejects a quotation
+      parameters:
+        - name: quotation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Quotation rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quotation'
+        '403':
+          description: Only customers may reject
+        '404':
+          description: Quotation not found
+components:
+  schemas:
+    PricingRuleInput:
+      type: object
+      required: [job_type, base_rate_per_ft, casing_rate_per_ft, labour_flat_fee, transport_flat_fee, equipment_flat_fee, installation_flat_fee, margin_percent, minimum_job_charge, assumed_depth_ft, depth_confidence_band_ft, depth_overage_rate_per_ft]
+      properties:
+        job_type: { type: string, enum: [residential, agricultural, commercial] }
+        base_rate_per_ft: { type: number }
+        casing_rate_per_ft: { type: number }
+        labour_flat_fee: { type: number }
+        transport_flat_fee: { type: number }
+        equipment_flat_fee: { type: number }
+        installation_flat_fee: { type: number }
+        margin_percent: { type: number }
+        minimum_job_charge: { type: number }
+        assumed_depth_ft: { type: number }
+        depth_confidence_band_ft: { type: number }
+        depth_overage_rate_per_ft: { type: number }
+    PricingRule:
+      allOf:
+        - $ref: '#/components/schemas/PricingRuleInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            contractor_id: { type: string, format: uuid }
+    Quotation:
+      type: object
+      properties:
+        quotation_id: { type: string, format: uuid }
+        job_id: { type: string, format: uuid }
+        version: { type: integer }
+        status: { type: string, enum: [draft, sent, approved, rejected] }
+        estimated_depth_range:
+          type: object
+          properties:
+            min_ft: { type: number }
+            max_ft: { type: number }
+            confidence: { type: string, enum: [low, medium, high] }
+        line_items:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              amount: { type: number }
+        subtotal: { type: number }
+        margin_amount: { type: number }
+        minimum_charge_applied: { type: boolean }
+        total_estimate: { type: number }
+        created_at: { type: string, format: date-time }
