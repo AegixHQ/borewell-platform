@@ -11,6 +11,7 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "pydantic>=2.6",
     "redis>=5.0",
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]

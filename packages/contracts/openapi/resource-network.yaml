@@ -5,12 +5,34 @@ info:
   description: Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media Storage
 paths:
   /v1/resources:
+    post:
+      summary: Register a new resource (rig/equipment/labour). Contractor only.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, name]
+              properties:
+                resource_type: { type: string, enum: [rig, equipment, labour] }
+                name: { type: string }
+                notes: { type: string }
+      responses:
+        '201':
+          description: Resource created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '403':
+          description: Only contractors may create resources
     get:
-      summary: List resources with optional availability/location filters
+      summary: List the current contractor's resources, optionally filtered by status
       parameters:
-        - name: status
+        - name: status_filter
           in: query
-          schema: { type: string, enum: [available, on_job, maintenance] }
+          required: false
+          schema: { type: string, enum: [available, reserved, assigned, in_use, returned] }
       responses:
         '200':
           description: Resource list
@@ -19,14 +41,56 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  properties:
-                    resource_id: { type: string, format: uuid }
-                    type: { type: string, enum: [rig, equipment, labour] }
-                    status: { type: string }
+                  $ref: '#/components/schemas/Resource'
+  /v1/resources/{resource_id}:
+    get:
+      summary: Get a single resource
+      parameters:
+        - name: resource_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '403':
+          description: Not the owning contractor
+        '404':
+          description: Resource not found
+    patch:
+      summary: Update a resource's status, name, or notes. Owning contractor only.
+      parameters:
+        - name: resource_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [available, reserved, assigned, in_use, returned] }
+                name: { type: string }
+                notes: { type: string }
+      responses:
+        '200':
+          description: Resource updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '403':
+          description: Not the owning contractor
+        '404':
+          description: Resource not found
   /v1/resources/match:
     post:
-      summary: Get ranked resource suggestions for a job's requirements
+      summary: "NOT IMPLEMENTED YET - Phase 1 (RFC 0001 section 7). Declared here so the contract documents the intended future shape; contract-check treats an unimplemented-but-declared route as informational, not a failure."
       requestBody:
         content:
           application/json:
@@ -40,7 +104,7 @@ paths:
                   items: { type: string }
       responses:
         '200':
-          description: Ranked suggestions
+          description: Ranked suggestions (not implemented in MVP)
           content:
             application/json:
               schema:
@@ -52,3 +116,14 @@ paths:
                     provider: { type: string }
                     cost: { type: number }
                     distance_km: { type: number }
+components:
+  schemas:
+    Resource:
+      type: object
+      properties:
+        resource_id: { type: string, format: uuid }
+        resource_type: { type: string, enum: [rig, equipment, labour] }
+        name: { type: string }
+        status: { type: string, enum: [available, reserved, assigned, in_use, returned] }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
