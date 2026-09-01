@@ -137,3 +137,20 @@ def test_get_nonexistent_resource_404s(client):
         f"/v1/resources/{uuid_module.uuid4()}", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 404
+
+
+def test_resource_owner_cannot_create_resource_yet(client):
+    # Deliberately still rejected: this MVP's data model keys resources to
+    # contractor_id only - there's no independent resource-owner-owned
+    # inventory concept yet. Granting this role CRUD access before that
+    # data model exists would let a resource_owner see an always-empty
+    # list and call it "done," which is worse than not shipping it. Real
+    # rig management (RFC 0001 section 7, Phase 1) needs a schema change
+    # here, not just a role check - revisit this test when that lands.
+    token = make_token("rigowner-1", "resource_owner")
+    resp = client.post(
+        "/v1/resources",
+        json={"resource_type": "rig", "name": "My Rig"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403

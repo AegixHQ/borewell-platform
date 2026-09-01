@@ -213,3 +213,11 @@ def test_get_nonexistent_quotation_404s(client):
         f"/v1/quotations/{uuid.uuid4()}", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 404
+
+
+def test_resource_owner_cannot_generate_quotation(client):
+    token = make_token("rigowner-2", "resource_owner")
+    resp = client.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403

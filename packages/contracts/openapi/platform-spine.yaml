@@ -17,7 +17,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
                 phone: { type: string }
-                role: { type: string, enum: [customer, contractor, admin], default: customer }
+                role: { type: string, enum: [customer, contractor, admin, resource_owner], default: customer }
       responses:
         '201':
           description: Registered
@@ -27,7 +27,7 @@ paths:
                 type: object
                 properties:
                   access_token: { type: string }
-                  role: { type: string, enum: [customer, contractor, admin] }
+                  role: { type: string, enum: [customer, contractor, admin, resource_owner] }
         '409':
           description: Email already registered
   /v1/auth/login:
@@ -51,7 +51,7 @@ paths:
                 type: object
                 properties:
                   access_token: { type: string }
-                  role: { type: string, enum: [customer, contractor, admin] }
+                  role: { type: string, enum: [customer, contractor, admin, resource_owner] }
         '401':
           description: Invalid credentials
   /v1/jobs:

@@ -62,3 +62,15 @@ def test_negative_base_rate_rejected(client):
         "/v1/pricing-rules", json=payload, headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 422
+
+
+def test_resource_owner_cannot_create_pricing_rule(client):
+    # Proves the claim that resource_owner is isolated from quotation's
+    # engine, not just documented - see platform-spine's
+    # test_resource_owner_can_register_and_login for where the role itself
+    # is proven to work.
+    token = make_token("rigowner-1", "resource_owner")
+    resp = client.post(
+        "/v1/pricing-rules", json=VALID_RULE, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403

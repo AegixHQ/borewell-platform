@@ -40,6 +40,29 @@ def test_login_wrong_password_rejected(client):
     assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
 
 
+def test_resource_owner_can_register_and_login(client):
+    # 4th role. Registration/login working is the whole scope of this
+    # addition right now - it does NOT grant access to any service's data
+    # endpoints yet. See the isolation tests in quotation/resource-network/
+    # payments-data for proof every existing endpoint still rejects it.
+    register_resp = client.post(
+        "/v1/auth/register",
+        json={
+            "email": "rigowner@example.com",
+            "password": "supersecret123",
+            "role": "resource_owner",
+        },
+    )
+    assert register_resp.status_code == 201
+    assert register_resp.json()["role"] == "resource_owner"
+
+    login_resp = client.post(
+        "/v1/auth/login", json={"email": "rigowner@example.com", "password": "supersecret123"}
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["role"] == "resource_owner"
+
+
 def test_protected_endpoint_without_token_rejected(client):
     resp = client.get("/v1/jobs")
     assert resp.status_code == 401

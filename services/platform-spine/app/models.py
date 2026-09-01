@@ -6,7 +6,7 @@ from sqlalchemy import Enum as SAEnum
 
 from app.database import Base
 
-ROLES = ("customer", "contractor", "admin")
+ROLES = ("customer", "contractor", "admin", "resource_owner")
 JOB_STATUSES = (
     "lead", "site_location", "requirement", "estimation", "price_calculation",
     "quotation", "customer_approval", "booking", "resource_allocation",

@@ -142,3 +142,11 @@ def test_admin_can_fail_payment(client):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "failed"
+
+
+def test_resource_owner_cannot_create_payment(client):
+    token = make_token("rigowner-1", "resource_owner")
+    resp = client.post(
+        "/v1/payments", json=_payment_payload(), headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
