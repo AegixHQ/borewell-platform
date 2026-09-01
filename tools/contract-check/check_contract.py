@@ -14,9 +14,9 @@ Usage:
 Example:
     python tools/contract-check/check_contract.py quotation
 """
-import sys
 import importlib
 import pathlib
+import sys
 
 import yaml
 

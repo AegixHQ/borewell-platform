@@ -9,6 +9,6 @@ repos:
     hooks:
       - id: contract-check
         name: contract conformance check (all services)
-        entry: bash -c 'for svc in platform-spine quotation resource-network payments-data; do python tools/contract-check/check_contract.py "$svc" || exit 1; done'
+        entry: bash -c 'PYTHON=python; if [ -d .venv ]; then PYTHON=.venv/bin/python; fi; for svc in platform-spine quotation resource-network payments-data; do $PYTHON tools/contract-check/check_contract.py "$svc" || exit 1; done'
         language: system
         pass_filenames: false
