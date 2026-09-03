@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +18,14 @@ app = FastAPI(
     title="platform-spine",
     version="0.1.0",
     description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.

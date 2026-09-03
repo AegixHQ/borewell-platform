@@ -1,13 +1,13 @@
 .PHONY: up down logs test lint check-contracts migrate
 
 up:
-	docker compose up --build
+	podman-compose up --build -d
 
 down:
-	docker compose down -v
+	podman-compose down -v
 
 logs:
-	docker compose logs -f
+	podman-compose logs -f
 
 test:
 	@for svc in platform-spine quotation resource-network payments-data; do \

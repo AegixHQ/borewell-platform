@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   postgres-platform-spine:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_DB: platform_spine
       POSTGRES_USER: borewell
@@ -11,7 +11,7 @@ services:
       - pg_platform_spine:/var/lib/postgresql/data
 
   postgres-quotation:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_DB: quotation
       POSTGRES_USER: borewell
@@ -20,7 +20,7 @@ services:
       - pg_quotation:/var/lib/postgresql/data
 
   postgres-resource-network:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_DB: resource_network
       POSTGRES_USER: borewell
@@ -29,7 +29,7 @@ services:
       - pg_resource_network:/var/lib/postgresql/data
 
   postgres-payments-data:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     environment:
       POSTGRES_DB: payments_data
       POSTGRES_USER: borewell
@@ -38,7 +38,7 @@ services:
       - pg_payments_data:/var/lib/postgresql/data
 
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     ports:
       - "6379:6379"
 
