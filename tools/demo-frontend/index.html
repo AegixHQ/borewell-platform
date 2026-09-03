@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Borewell Platform — Demo Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#242836;--border:#2e3347;--primary:#6c63ff;--primary-glow:#6c63ff33;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--text:#e2e8f0;--text2:#94a3b8;--radius:10px;--font:'Inter',system-ui,sans-serif}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;backdrop-filter:blur(12px)}
+.topbar h1{font-size:18px;font-weight:700;background:linear-gradient(135deg,#6c63ff,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.topbar .auth-info{font-size:13px;color:var(--text2);display:flex;align-items:center;gap:12px}
+.topbar .auth-info .role-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;background:var(--primary-glow);color:var(--primary);border:1px solid var(--primary)}
+.container{max-width:1200px;margin:0 auto;padding:24px}
+.health-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+.health-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center;transition:border-color .2s}
+.health-card h3{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text2)}
+.health-card .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;background:var(--text2)}
+.health-card .dot.ok{background:var(--green);box-shadow:0 0 8px #22c55e66}
+.health-card .dot.err{background:var(--red);box-shadow:0 0 8px #ef444466}
+.health-card .status-text{font-size:12px;font-weight:500}
+.tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:0}
+.tab{padding:10px 20px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .2s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.panel{display:none}
+.panel.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card h2{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card h2 .icon{font-size:18px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+label{font-size:12px;font-weight:500;color:var(--text2);display:block;margin-bottom:4px}
+input,select{width:100%;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;outline:none;transition:border-color .2s}
+input:focus,select:focus{border-color:var(--primary)}
+.btn{padding:9px 20px;border:none;border-radius:6px;font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:#5b54e6;transform:translateY(-1px)}
+.btn-sm{padding:6px 14px;font-size:12px}
+.btn-green{background:var(--green);color:#fff}
+.btn-red{background:var(--red);color:#fff}
+.btn-amber{background:var(--amber);color:#000}
+.actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.log{background:#0d0f14;border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:14px;max-height:260px;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;line-height:1.7;color:var(--text2)}
+.log .ok{color:var(--green)}.log .err{color:var(--red)}.log .info{color:var(--amber)}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+th{text-align:left;padding:8px 10px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid var(--border)}
+tr:hover td{background:var(--surface2)}
+.badge{padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+.badge-green{background:#22c55e22;color:var(--green)}
+.badge-amber{background:#f59e0b22;color:var(--amber)}
+.badge-red{background:#ef444422;color:var(--red)}
+.badge-blue{background:#6c63ff22;color:var(--primary)}
+.empty{text-align:center;padding:30px;color:var(--text2);font-size:13px}
+@media(max-width:700px){.health-row{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>⛏ Borewell Platform — Demo</h1>
+  <div class="auth-info">
+    <span id="auth-status">Not logged in</span>
+    <span id="role-badge" class="role-badge" style="display:none"></span>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Health -->
+  <div class="health-row" id="health-row">
+    <div class="health-card"><h3>platform-spine :8001</h3><span class="dot" id="h-spine"></span><span class="status-text" id="ht-spine">…</span></div>
+    <div class="health-card"><h3>quotation :8002</h3><span class="dot" id="h-quote"></span><span class="status-text" id="ht-quote">…</span></div>
+    <div class="health-card"><h3>resource-network :8003</h3><span class="dot" id="h-res"></span><span class="status-text" id="ht-res">…</span></div>
+    <div class="health-card"><h3>payments-data :8004</h3><span class="dot" id="h-pay"></span><span class="status-text" id="ht-pay">…</span></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="auth">Auth</button>
+    <button class="tab" data-tab="jobs">Jobs</button>
+    <button class="tab" data-tab="quotations">Quotations</button>
+    <button class="tab" data-tab="resources">Resources</button>
+    <button class="tab" data-tab="payments">Payments</button>
+  </div>
+
+  <!-- AUTH -->
+  <div class="panel active" id="tab-auth">
+    <div class="card">
+      <h2><span class="icon">🔑</span> Register / Login</h2>
+      <div class="form-grid">
+        <div><label>Email</label><input id="a-email" type="email" placeholder="user@example.com"></div>
+        <div><label>Password</label><input id="a-pass" type="password" placeholder="min 8 chars"></div>
+        <div><label>Role (register only)</label>
+          <select id="a-role"><option value="customer">customer</option><option value="contractor">contractor</option><option value="admin">admin</option><option value="resource_owner">resource_owner</option></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="doRegister()">Register</button>
+        <button class="btn btn-green" onclick="doLogin()">Login</button>
+      </div>
+      <div class="log" id="auth-log"></div>
+    </div>
+  </div>
+
+  <!-- JOBS -->
+  <div class="panel" id="tab-jobs">
+    <div class="card">
+      <h2><span class="icon">📋</span> Create Job (customer only)</h2>
+      <div class="form-grid">
+        <div><label>Latitude</label><input id="j-lat" type="number" step="any" value="12.9716"></div>
+        <div><label>Longitude</label><input id="j-lng" type="number" step="any" value="77.5946"></div>
+        <div><label>Job Type</label>
+          <select id="j-type"><option>residential</option><option>agricultural</option><option>commercial</option></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="createJob()">Create Job</button>
+        <button class="btn btn-amber" onclick="listJobs()">List Jobs</button>
+      </div>
+      <div class="log" id="jobs-log"></div>
+    </div>
+    <div class="card">
+      <h2><span class="icon">🔄</span> Advance Job Status (contractor/admin)</h2>
+      <div class="form-grid">
+        <div><label>Job ID</label><input id="js-id" placeholder="paste job_id"></div>
+        <div><label>New Status</label>
+          <select id="js-status">
+            <option>site_location</option><option>requirement</option><option>estimation</option><option>price_calculation</option><option>quotation</option><option>customer_approval</option><option>booking</option><option>resource_allocation</option><option>drilling</option><option>progress</option><option>completion</option><option>payment</option><option>service_history</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions"><button class="btn btn-primary" onclick="advanceJob()">Advance Status</button></div>
+      <div class="log" id="jobs-status-log"></div>
+    </div>
+  </div>
+
+  <!-- QUOTATIONS -->
+  <div class="panel" id="tab-quotations">
+    <div class="card">
+      <h2><span class="icon">💰</span> Pricing Rules (contractor)</h2>
+      <div class="actions">
+        <button class="btn btn-amber" onclick="listPricingRules()">List Rules</button>
+      </div>
+      <div class="log" id="pricing-log"></div>
+    </div>
+    <div class="card">
+      <h2><span class="icon">📝</span> Generate Quotation (contractor)</h2>
+      <div class="form-grid">
+        <div><label>Job ID</label><input id="q-jobid" placeholder="job_id"></div>
+        <div><label>Lat</label><input id="q-lat" type="number" step="any" value="12.9716"></div>
+        <div><label>Lng</label><input id="q-lng" type="number" step="any" value="77.5946"></div>
+        <div><label>Job Type</label>
+          <select id="q-type"><option>residential</option><option>agricultural</option><option>commercial</option></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="generateQuotation()">Generate</button>
+      </div>
+      <div class="log" id="quote-log"></div>
+    </div>
+    <div class="card">
+      <h2><span class="icon">✅</span> Approve / Reject (customer)</h2>
+      <div class="form-grid">
+        <div><label>Quotation ID</label><input id="qa-id" placeholder="quotation_id"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-green btn-sm" onclick="approveQuote()">Approve</button>
+        <button class="btn btn-red btn-sm" onclick="rejectQuote()">Reject</button>
+        <button class="btn btn-amber btn-sm" onclick="getLatestQuote()">Get Latest by Job ID</button>
+      </div>
+      <div class="log" id="quote-action-log"></div>
+    </div>
+  </div>
+
+  <!-- RESOURCES -->
+  <div class="panel" id="tab-resources">
+    <div class="card">
+      <h2><span class="icon">🏗️</span> Resources (contractor)</h2>
+      <div class="form-grid">
+        <div><label>Type</label>
+          <select id="r-type"><option>rig</option><option>equipment</option><option>labour</option></select>
+        </div>
+        <div><label>Name</label><input id="r-name" placeholder="e.g. Rig Alpha"></div>
+        <div><label>Notes</label><input id="r-notes" placeholder="optional"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="createResource()">Create</button>
+        <button class="btn btn-amber" onclick="listResources()">List All</button>
+      </div>
+      <div class="log" id="res-log"></div>
+    </div>
+    <div class="card">
+      <h2><span class="icon">🔄</span> Update Resource Status</h2>
+      <div class="form-grid">
+        <div><label>Resource ID</label><input id="ru-id" placeholder="resource_id"></div>
+        <div><label>New Status</label>
+          <select id="ru-status"><option>available</option><option>reserved</option><option>assigned</option><option>in_use</option><option>returned</option></select>
+        </div>
+      </div>
+      <div class="actions"><button class="btn btn-primary" onclick="updateResource()">Update</button></div>
+      <div class="log" id="res-update-log"></div>
+    </div>
+  </div>
+
+  <!-- PAYMENTS -->
+  <div class="panel" id="tab-payments">
+    <div class="card">
+      <h2><span class="icon">💳</span> Create Payment (customer)</h2>
+      <div class="form-grid">
+        <div><label>Job ID</label><input id="p-jobid" placeholder="job_id"></div>
+        <div><label>Quotation ID</label><input id="p-qid" placeholder="quotation_id"></div>
+        <div><label>Amount</label><input id="p-amount" type="number" step="any"></div>
+        <div><label>Idempotency Key</label><input id="p-ikey" placeholder="unique key"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="createPayment()">Create Payment</button>
+        <button class="btn btn-amber" onclick="listPayments()">List Payments</button>
+      </div>
+      <div class="log" id="pay-log"></div>
+    </div>
+    <div class="card">
+      <h2><span class="icon">🛡️</span> Admin: Confirm / Fail Payment</h2>
+      <div class="form-grid">
+        <div><label>Payment ID</label><input id="pa-id" placeholder="payment_id"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-green btn-sm" onclick="confirmPayment()">Confirm</button>
+        <button class="btn btn-red btn-sm" onclick="failPayment()">Fail</button>
+      </div>
+      <div class="log" id="pay-admin-log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- Config ---
+const SPINE = 'http://localhost:8001';
+const QUOTE = 'http://localhost:8002';
+const RES   = 'http://localhost:8003';
+const PAY   = 'http://localhost:8004';
+
+let TOKEN = '';
+
+function headers() {
+  const h = { 'Content-Type': 'application/json' };
+  if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN;
+  return h;
+}
+
+function log(id, msg, cls = '') {
+  const el = document.getElementById(id);
+  const line = document.createElement('div');
+  line.className = cls;
+  if (typeof msg === 'object') msg = JSON.stringify(msg, null, 2);
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.prepend(line);
+}
+
+async function api(method, url, body, logId) {
+  try {
+    log(logId, `${method} ${url}`, 'info');
+    const opts = { method, headers: headers() };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    const data = await r.json().catch(() => r.statusText);
+    const cls = r.ok ? 'ok' : 'err';
+    log(logId, `${r.status}: ${JSON.stringify(data, null, 2)}`, cls);
+    return { ok: r.ok, status: r.status, data };
+  } catch (e) {
+    log(logId, `Network error: ${e.message}`, 'err');
+    return { ok: false, data: null };
+  }
+}
+
+// --- Health checks ---
+async function checkHealth() {
+  const services = [
+    { url: SPINE, dot: 'h-spine', text: 'ht-spine' },
+    { url: QUOTE, dot: 'h-quote', text: 'ht-quote' },
+    { url: RES,   dot: 'h-res',   text: 'ht-res' },
+    { url: PAY,   dot: 'h-pay',   text: 'ht-pay' },
+  ];
+  for (const s of services) {
+    try {
+      const r = await fetch(s.url + '/healthz');
+      const ok = r.ok;
+      document.getElementById(s.dot).className = 'dot ' + (ok ? 'ok' : 'err');
+      document.getElementById(s.text).textContent = ok ? 'Healthy' : `Error ${r.status}`;
+    } catch {
+      document.getElementById(s.dot).className = 'dot err';
+      document.getElementById(s.text).textContent = 'Offline';
+    }
+  }
+}
+
+// --- Auth ---
+async function doRegister() {
+  const body = { email: v('a-email'), password: v('a-pass'), role: v('a-role') };
+  const r = await api('POST', SPINE + '/v1/auth/register', body, 'auth-log');
+  if (r.ok && r.data.access_token) setToken(r.data.access_token, r.data.role);
+}
+async function doLogin() {
+  const body = { email: v('a-email'), password: v('a-pass') };
+  const r = await api('POST', SPINE + '/v1/auth/login', body, 'auth-log');
+  if (r.ok && r.data.access_token) setToken(r.data.access_token, r.data.role);
+}
+function setToken(t, role) {
+  TOKEN = t;
+  document.getElementById('auth-status').textContent = v('a-email');
+  const badge = document.getElementById('role-badge');
+  badge.textContent = role; badge.style.display = 'inline';
+  log('auth-log', 'Token stored ✓', 'ok');
+}
+
+// --- Jobs ---
+async function createJob() {
+  const body = { location: { lat: +v('j-lat'), lng: +v('j-lng') }, job_type: v('j-type') };
+  await api('POST', SPINE + '/v1/jobs', body, 'jobs-log');
+}
+async function listJobs() { await api('GET', SPINE + '/v1/jobs', null, 'jobs-log'); }
+async function advanceJob() {
+  await api('PATCH', SPINE + '/v1/jobs/' + v('js-id') + '/status', { status: v('js-status') }, 'jobs-status-log');
+}
+
+// --- Quotations ---
+async function listPricingRules() { await api('GET', QUOTE + '/v1/pricing-rules', null, 'pricing-log'); }
+async function generateQuotation() {
+  const body = { job_id: v('q-jobid'), location: { lat: +v('q-lat'), lng: +v('q-lng') }, job_type: v('q-type') };
+  await api('POST', QUOTE + '/v1/quotations', body, 'quote-log');
+}
+async function approveQuote() { await api('POST', QUOTE + '/v1/quotations/' + v('qa-id') + '/approve', {}, 'quote-action-log'); }
+async function rejectQuote() { await api('POST', QUOTE + '/v1/quotations/' + v('qa-id') + '/reject', {}, 'quote-action-log'); }
+async function getLatestQuote() { await api('GET', QUOTE + '/v1/quotations/job/' + v('qa-id') + '/latest', null, 'quote-action-log'); }
+
+// --- Resources ---
+async function createResource() {
+  const body = { resource_type: v('r-type'), name: v('r-name'), notes: v('r-notes') };
+  await api('POST', RES + '/v1/resources', body, 'res-log');
+}
+async function listResources() { await api('GET', RES + '/v1/resources', null, 'res-log'); }
+async function updateResource() {
+  await api('PATCH', RES + '/v1/resources/' + v('ru-id'), { status: v('ru-status') }, 'res-update-log');
+}
+
+// --- Payments ---
+async function createPayment() {
+  const body = { job_id: v('p-jobid'), quotation_id: v('p-qid'), amount: +v('p-amount'), idempotency_key: v('p-ikey') };
+  await api('POST', PAY + '/v1/payments', body, 'pay-log');
+}
+async function listPayments() { await api('GET', PAY + '/v1/payments', null, 'pay-log'); }
+async function confirmPayment() { await api('POST', PAY + '/v1/payments/' + v('pa-id') + '/confirm', {}, 'pay-admin-log'); }
+async function failPayment() { await api('POST', PAY + '/v1/payments/' + v('pa-id') + '/fail', {}, 'pay-admin-log'); }
+
+// --- Helpers ---
+function v(id) { return document.getElementById(id).value; }
+
+// --- Tabs ---
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('tab-' + t.dataset.tab).classList.add('active');
+  });
+});
+
+// Init
+checkHealth();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>

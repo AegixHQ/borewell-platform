@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +17,14 @@ app = FastAPI(
     title="payments-data",
     version="0.1.0",
     description="Payments and Split Settlement, Data and Analytics",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
