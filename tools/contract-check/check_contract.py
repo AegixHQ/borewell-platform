@@ -12,7 +12,7 @@ Usage:
     python tools/contract-check/check_contract.py <service-name>
 
 Example:
-    python tools/contract-check/check_contract.py quotation
+    python tools/contract-check/check_contract.py platform-spine
 """
 import importlib
 import pathlib
