@@ -10,8 +10,14 @@ what it actually approved. Trusting a client-supplied amount here would be
 the exact "highest-cost class of bug in this domain" the Architecture doc
 warns about (section 9).
 
-Wrapped as a plain function (not called directly in main.py) so tests can
-override it via FastAPI's dependency injection instead of mocking httpx
+Now that quotation service enforces real ownership (F-01), this call also
+inherits that protection for free: forwarding the customer's own
+Authorization header means quotation service will 403 a request for a
+quotation that customer doesn't own, which main.py maps to a 403 here too
+- not a generic "service unavailable" (F-06).
+
+Wrapped as plain functions (not called directly in main.py) so tests can
+override them via FastAPI's dependency injection instead of mocking httpx
 internals - see tests/conftest.py.
 """
 import os
@@ -24,7 +30,17 @@ QUOTATION_SERVICE_URL = os.getenv("QUOTATION_SERVICE_URL", "http://quotation:800
 class QuotationServiceError(Exception):
     """A payment mutation must never proceed on an unverifiable quotation -
     fail closed, not open, when the quotation service is unreachable or
-    returns something unexpected."""
+    returns something outside the known set of business responses."""
+
+
+class QuotationNotFound(Exception):
+    pass
+
+
+class QuotationAccessDenied(Exception):
+    """The caller's own token was rejected by quotation service's ownership
+    check - this is a real 403, not a connectivity problem, and must not
+    be flattened into QuotationServiceError's generic 502."""
 
 
 def fetch_quotation(quotation_id: str, auth_header: str) -> dict:
@@ -38,7 +54,9 @@ def fetch_quotation(quotation_id: str, auth_header: str) -> dict:
         raise QuotationServiceError(f"quotation service unreachable: {exc}") from exc
 
     if response.status_code == 404:
-        raise QuotationServiceError("quotation not found")
+        raise QuotationNotFound("quotation not found")
+    if response.status_code == 403:
+        raise QuotationAccessDenied("caller does not own this quotation")
     if response.status_code != 200:
         raise QuotationServiceError(f"quotation service returned {response.status_code}")
     return response.json()

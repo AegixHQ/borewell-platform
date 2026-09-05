@@ -1,1 +1,1 @@
-export { decodeJwtPayload, login } from "./auth.js";
+export { decodeJwtPayload, login, registerAccount } from "./auth.js";

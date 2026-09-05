@@ -69,6 +69,7 @@ class JobCreateRequest(BaseModel):
 
 class JobResponse(BaseModel):
     job_id: uuid.UUID
+    customer_id: uuid.UUID
     status: str
     job_type: str
     location: Location

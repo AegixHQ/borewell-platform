@@ -3,6 +3,8 @@ version: "3.9"
 services:
   postgres-platform-spine:
     image: docker.io/library/postgres:16-alpine
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: platform_spine
       POSTGRES_USER: borewell
@@ -12,6 +14,8 @@ services:
 
   postgres-quotation:
     image: docker.io/library/postgres:16-alpine
+    ports:
+      - "5433:5432"
     environment:
       POSTGRES_DB: quotation
       POSTGRES_USER: borewell
@@ -21,6 +25,8 @@ services:
 
   postgres-resource-network:
     image: docker.io/library/postgres:16-alpine
+    ports:
+      - "5434:5432"
     environment:
       POSTGRES_DB: resource_network
       POSTGRES_USER: borewell
@@ -30,6 +36,8 @@ services:
 
   postgres-payments-data:
     image: docker.io/library/postgres:16-alpine
+    ports:
+      - "5435:5432"
     environment:
       POSTGRES_DB: payments_data
       POSTGRES_USER: borewell
@@ -52,6 +60,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: dev-only-secret-change-in-production
       JWT_EXPIRY_MINUTES: "60"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
     ports:
       - "8001:8000"
 
@@ -64,6 +73,7 @@ services:
       DATABASE_URL: postgresql://borewell:borewell@postgres-quotation:5432/quotation
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: dev-only-secret-change-in-production
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
     ports:
       - "8002:8000"
 
@@ -76,6 +86,7 @@ services:
       DATABASE_URL: postgresql://borewell:borewell@postgres-resource-network:5432/resource_network
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: dev-only-secret-change-in-production
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
     ports:
       - "8003:8000"
 
@@ -89,6 +100,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: dev-only-secret-change-in-production
       QUOTATION_SERVICE_URL: http://quotation:8000
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
     ports:
       - "8004:8000"
 

@@ -1,3 +1,9 @@
+import os
+
+# Must be set before any `from app.*` import below - app.security reads
+# JWT_SECRET at module import time and refuses to start without it (F-03).
+os.environ.setdefault("JWT_SECRET", "test-secret-for-ci-and-local-tests-only")
+
 import pytest
 from app.database import Base, get_db
 from app.main import app

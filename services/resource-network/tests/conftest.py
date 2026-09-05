@@ -1,3 +1,9 @@
+import os
+
+# Must be set before any `from app.*` import below - app.security reads
+# JWT_SECRET at module import time and refuses to start without it (F-03).
+os.environ.setdefault("JWT_SECRET", "test-secret-for-ci-and-local-tests-only")
+
 import uuid
 
 import jwt
@@ -10,7 +16,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
-JWT_SECRET_FOR_TESTS = "dev-only-secret-change-in-production"
+# Read from the env var set by the bootstrap above, so the token signing
+# secret and the service verification secret are always identical.
+JWT_SECRET_FOR_TESTS = os.environ["JWT_SECRET"]
 _NAMESPACE = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
 

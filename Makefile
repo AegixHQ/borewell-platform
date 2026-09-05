@@ -1,13 +1,13 @@
 .PHONY: up down logs test lint check-contracts migrate
 
 up:
-	podman-compose up --build -d
+	docker compose up --build -d
 
 down:
-	podman-compose down -v
+	docker compose down -v
 
 logs:
-	podman-compose logs -f
+	docker compose logs -f
 
 test:
 	@for svc in platform-spine quotation resource-network payments-data; do \
@@ -25,4 +25,7 @@ check-contracts:
 	done
 
 migrate:
-	cd services/platform-spine && alembic upgrade head
+	@for svc in platform-spine quotation resource-network payments-data; do \
+		echo "== Migrating $$svc =="; \
+		(cd services/$$svc && alembic upgrade head) || exit 1; \
+	done

@@ -1,3 +1,4 @@
+import os
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -17,12 +18,17 @@ app = FastAPI(
     description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media",
 )
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.

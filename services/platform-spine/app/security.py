@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-only-secret-change-in-production")
+# F-03: no insecure fallback - service refuses to start without this.
+# Tests set it via os.environ.setdefault() in conftest.py before importing.
+JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_MINUTES = int(os.getenv("JWT_EXPIRY_MINUTES", "60"))
 

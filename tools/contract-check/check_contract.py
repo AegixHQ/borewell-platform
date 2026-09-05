@@ -14,6 +14,13 @@ Usage:
 Example:
     python tools/contract-check/check_contract.py platform-spine
 """
+import os
+
+# F-03: services now refuse to import without JWT_SECRET. Set a dummy value
+# here so the import succeeds for static route introspection only.
+os.environ.setdefault("JWT_SECRET", "contract-check-tool-introspection-only")
+
+
 import importlib
 import pathlib
 import sys

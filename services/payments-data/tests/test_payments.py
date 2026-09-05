@@ -1,13 +1,13 @@
 import uuid
 
-from tests.conftest import make_token
+from tests.conftest import DEFAULT_JOB_ID, access_denied_fetcher, make_token, not_found_fetcher
 
 CUST_TOKEN = make_token("cust-1", "customer")
 
 
 def _payment_payload(**overrides):
     payload = {
-        "job_id": str(uuid.uuid4()),
+        "job_id": DEFAULT_JOB_ID,
         "quotation_id": str(uuid.uuid4()),
         "amount": 95450.0,
         "idempotency_key": str(uuid.uuid4()),
@@ -150,3 +150,36 @@ def test_resource_owner_cannot_create_payment(client):
         "/v1/payments", json=_payment_payload(), headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 403
+
+
+# ---------- F-06 regression tests ----------
+
+
+def test_job_id_quotation_id_mismatch_rejects_payment(client):
+    resp = client.post(
+        "/v1/payments",
+        json=_payment_payload(job_id=str(uuid.uuid4())),  # doesn't match DEFAULT_JOB_ID
+        headers={"Authorization": f"Bearer {CUST_TOKEN}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "JOB_QUOTATION_MISMATCH"
+
+
+def test_quotation_not_found_returns_404_not_502(client_factory):
+    c = client_factory(fetcher=not_found_fetcher)
+    resp = c.post(
+        "/v1/payments", json=_payment_payload(), headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "QUOTATION_NOT_FOUND"
+
+
+def test_quotation_access_denied_returns_403_not_502(client_factory):
+    # Proves the cascade from F-01: if quotation service 403s the
+    # forwarded token, payments-data surfaces a real 403, not 502.
+    c = client_factory(fetcher=access_denied_fetcher)
+    resp = c.post(
+        "/v1/payments", json=_payment_payload(), headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN"

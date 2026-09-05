@@ -1,3 +1,4 @@
+import os
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -11,7 +12,12 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
-from app.payments.quotation_client import QuotationServiceError, fetch_quotation
+from app.payments.quotation_client import (
+    QuotationAccessDenied,
+    QuotationNotFound,
+    QuotationServiceError,
+    fetch_quotation,
+)
 
 app = FastAPI(
     title="payments-data",
@@ -19,12 +25,17 @@ app = FastAPI(
     description="Payments and Split Settlement, Data and Analytics",
 )
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
@@ -111,12 +122,37 @@ def create_payment(
     auth_header = request.headers.get("Authorization", "")
     try:
         quotation = quotation_fetcher(str(payload.quotation_id), auth_header)
+    except QuotationNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
+        )
+    except QuotationAccessDenied:
+        # F-06: cascades correctly now that quotation service enforces real
+        # ownership (F-01) - a customer paying against a quotation they
+        # don't own gets a real 403 here, not a generic "service unavailable."
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "You do not have access to this quotation."},
+        )
     except QuotationServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "code": "QUOTATION_SERVICE_UNAVAILABLE",
                 "message": f"Could not verify the quotation before charging: {exc}",
+            },
+        )
+
+    # F-06: job_id and quotation_id are supplied separately by the client -
+    # without this check, a valid, approved, correctly-priced quotation for
+    # a DIFFERENT job could be paired with an unrelated job_id.
+    if quotation.get("job_id") != str(payload.job_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "JOB_QUOTATION_MISMATCH",
+                "message": "quotation_id does not belong to the given job_id.",
             },
         )
 

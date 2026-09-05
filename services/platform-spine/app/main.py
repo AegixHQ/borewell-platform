@@ -1,3 +1,4 @@
+import os
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -20,12 +21,17 @@ app = FastAPI(
     description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing",
 )
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
@@ -133,6 +139,7 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
 def _job_to_response(job: models.Job) -> schemas.JobResponse:
     return schemas.JobResponse(
         job_id=job.id,
+        customer_id=job.customer_id,
         status=job.status,
         job_type=job.job_type,
         location=schemas.Location(lat=job.location_lat, lng=job.location_lng),

@@ -1,6 +1,6 @@
 import uuid
 
-from tests.conftest import make_token
+from tests.conftest import make_token, user_uuid
 
 BASE_RULE = {
     "job_type": "residential",
@@ -164,30 +164,32 @@ def test_latest_quotation_404_when_none_exists(client):
     assert resp.json()["error"]["code"] == "QUOTATION_NOT_FOUND"
 
 
-def test_customer_can_approve_quotation(client):
-    token = _setup_rule(client, "contractor-appr")
-    create_resp = client.post(
+def test_customer_can_approve_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("cust-appr"))
+    token = _setup_rule(c, "contractor-appr")
+    create_resp = c.post(
         "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
     )
     quotation_id = create_resp.json()["quotation_id"]
 
     cust_token = make_token("cust-appr", "customer")
-    resp = client.post(
+    resp = c.post(
         f"/v1/quotations/{quotation_id}/approve", headers={"Authorization": f"Bearer {cust_token}"}
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "approved"
 
 
-def test_customer_can_reject_quotation(client):
-    token = _setup_rule(client, "contractor-rej")
-    create_resp = client.post(
+def test_customer_can_reject_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("cust-rej"))
+    token = _setup_rule(c, "contractor-rej")
+    create_resp = c.post(
         "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
     )
     quotation_id = create_resp.json()["quotation_id"]
 
     cust_token = make_token("cust-rej", "customer")
-    resp = client.post(
+    resp = c.post(
         f"/v1/quotations/{quotation_id}/reject", headers={"Authorization": f"Bearer {cust_token}"}
     )
     assert resp.status_code == 200
@@ -221,3 +223,129 @@ def test_resource_owner_cannot_generate_quotation(client):
         "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 403
+
+
+# ---------- F-01 regression tests ----------
+# Every one of these must fail (403/404/502) the way it says, or the
+# ownership fix has regressed.
+
+
+def test_owning_customer_can_view_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("owner-cust"))
+    token = _setup_rule(c, "contractor-owner-view")
+    create_resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    quotation_id = create_resp.json()["quotation_id"]
+
+    owner_token = make_token("owner-cust", "customer")
+    resp = c.get(
+        f"/v1/quotations/{quotation_id}", headers={"Authorization": f"Bearer {owner_token}"}
+    )
+    assert resp.status_code == 200
+
+
+def test_different_customer_cannot_view_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("real-owner"))
+    token = _setup_rule(c, "contractor-idor-1")
+    create_resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    quotation_id = create_resp.json()["quotation_id"]
+
+    attacker_token = make_token("not-the-owner", "customer")
+    resp = c.get(
+        f"/v1/quotations/{quotation_id}", headers={"Authorization": f"Bearer {attacker_token}"}
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_different_customer_cannot_view_latest_quotation_for_job(client_factory):
+    c = client_factory(customer_id=user_uuid("real-owner-2"))
+    token = _setup_rule(c, "contractor-idor-2")
+    job_id = str(uuid.uuid4())
+    c.post(
+        "/v1/quotations",
+        json=_quote_request(job_id=job_id),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    attacker_token = make_token("not-the-owner-2", "customer")
+    resp = c.get(
+        f"/v1/quotations/job/{job_id}/latest", headers={"Authorization": f"Bearer {attacker_token}"}
+    )
+    assert resp.status_code == 403
+
+
+def test_different_customer_cannot_approve_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("real-owner-3"))
+    token = _setup_rule(c, "contractor-idor-3")
+    create_resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    quotation_id = create_resp.json()["quotation_id"]
+
+    attacker_token = make_token("not-the-owner-3", "customer")
+    resp = c.post(
+        f"/v1/quotations/{quotation_id}/approve",
+        headers={"Authorization": f"Bearer {attacker_token}"},
+    )
+    assert resp.status_code == 403
+    check = c.get(
+        f"/v1/quotations/{quotation_id}",
+        headers={"Authorization": f"Bearer {make_token('real-owner-3', 'customer')}"},
+    )
+    assert check.json()["status"] == "draft"
+
+
+def test_different_customer_cannot_reject_quotation(client_factory):
+    c = client_factory(customer_id=user_uuid("real-owner-4"))
+    token = _setup_rule(c, "contractor-idor-4")
+    create_resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    quotation_id = create_resp.json()["quotation_id"]
+
+    attacker_token = make_token("not-the-owner-4", "customer")
+    resp = c.post(
+        f"/v1/quotations/{quotation_id}/reject",
+        headers={"Authorization": f"Bearer {attacker_token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_generate_quotation_for_nonexistent_job_fails(client_factory):
+    def not_found_fetcher():
+        def _fetch(job_id, auth_header):
+            from app.jobs.job_client import JobNotFound
+
+            raise JobNotFound("job not found")
+
+        return _fetch
+
+    c = client_factory(job_fetcher=not_found_fetcher)
+    token = _setup_rule(c, "contractor-nojob")
+    resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+def test_generate_quotation_fails_closed_when_job_service_unreachable(client_factory):
+    def unavailable_fetcher():
+        def _fetch(job_id, auth_header):
+            from app.jobs.job_client import JobServiceError
+
+            raise JobServiceError("connection refused")
+
+        return _fetch
+
+    c = client_factory(job_fetcher=unavailable_fetcher)
+    token = _setup_rule(c, "contractor-svcdown")
+    resp = c.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["code"] == "JOB_SERVICE_UNAVAILABLE"
