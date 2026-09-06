@@ -136,8 +136,86 @@ paths:
           description: Invalid transition (skips a state or moves backward)
         '403':
           description: Only contractor/admin may advance job status
+  /v1/jobs/{job_id}/completion:
+    post:
+      summary: |
+        Log actual depth and cost at job completion (FR-TRACK-03). Contractor
+        only. Only valid when job status is "completion". Only writable once -
+        a second POST returns 409 ALREADY_COMPLETED (SRS section 5 entity).
+        Fetches the approved quotation total from the quotation service to
+        compute variance at write time (BR-04). Emits job.completed event.
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actual_depth_ft, actual_cost]
+              properties:
+                actual_depth_ft:
+                  type: number
+                  description: Actual depth drilled, in feet. If > quotation max_ft, depth overage charge is computed (BR-05).
+                actual_cost:
+                  type: number
+                  description: Actual total cost incurred by the contractor.
+      responses:
+        '201':
+          description: Completion record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCompletionRecord'
+        '400':
+          description: Job is not at completion status, or required fields missing
+        '403':
+          description: Contractor only
+        '404':
+          description: Job not found
+        '409':
+          description: Completion record already exists for this job (only writable once)
+
+  /v1/jobs/{job_id}/completion/result:
+    get:
+      summary: Read the completion record and variance for a completed job (FR-TRACK-04).
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Completion record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCompletionRecord'
+        '403':
+          description: Can only view your own job's completion record
+        '404':
+          description: No completion record for this job yet
+
 components:
   schemas:
+    JobCompletionRecord:
+      type: object
+      description: |
+        Written once at job completion (FR-TRACK-03). Stores actual depth/cost
+        and the variance vs quoted total (BR-04). Never updated after creation.
+      properties:
+        job_id: { type: string, format: uuid }
+        actual_depth_ft: { type: number }
+        actual_cost: { type: string, format: decimal, description: "Decimal string, same serialization as quotation total_estimate" }
+        quoted_total: { type: string, format: decimal, description: "Approved quotation total at time of completion" }
+        variance: { type: string, format: decimal, description: "actual_cost minus quoted_total (negative = under budget)" }
+        depth_overage_ft: { type: number, description: "Feet beyond quotation max_ft, or 0 if within range (BR-05)" }
+        depth_overage_charge: { type: string, format: decimal, description: "Overage fee at contractor's configured rate, or 0 (BR-05)" }
+        completed_at: { type: string, format: date-time }
+
     Job:
       type: object
       properties:

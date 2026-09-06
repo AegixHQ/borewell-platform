@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -87,3 +88,23 @@ class JobStatusUpdateRequest(BaseModel):
         if v not in JOB_STATUSES:
             raise ValueError(f"status must be one of {JOB_STATUSES}")
         return v
+
+
+class JobCompletionRequest(BaseModel):
+    actual_depth_ft: float = Field(gt=0)
+    actual_cost: float = Field(gt=0)
+
+
+class JobCompletionResponse(BaseModel):
+    job_id: uuid.UUID
+    actual_depth_ft: float
+    depth_overage_ft: float
+    # MONEY fields serialized as Decimal strings - same convention as
+    # quotation and payments-data. See those services' schemas.py.
+    actual_cost: Decimal
+    quoted_total: Decimal
+    variance: Decimal
+    depth_overage_charge: Decimal
+    completed_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

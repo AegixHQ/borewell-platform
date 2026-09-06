@@ -1,5 +1,6 @@
 import os
 import uuid
+from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -9,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import events, models, schemas
+from app import events, models, quotation_client, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.job_state_machine import InvalidTransitionError, validate_transition
@@ -228,3 +229,176 @@ def advance_job_status(
     db.commit()
     db.refresh(job)
     return _job_to_response(job)
+
+
+# ---------- job completion (FR-TRACK-03, FR-TRACK-04) ----------
+
+
+def _completion_to_response(c: models.JobCompletion) -> schemas.JobCompletionResponse:
+    return schemas.JobCompletionResponse(
+        job_id=c.job_id,
+        actual_depth_ft=c.actual_depth_ft,
+        depth_overage_ft=c.depth_overage_ft,
+        actual_cost=c.actual_cost,
+        quoted_total=c.quoted_total,
+        variance=c.variance,
+        depth_overage_charge=c.depth_overage_charge,
+        completed_at=c.completed_at,
+    )
+
+
+@app.post(
+    "/v1/jobs/{job_id}/completion",
+    response_model=schemas.JobCompletionResponse,
+    status_code=201,
+)
+def log_job_completion(
+    job_id: uuid.UUID,
+    payload: schemas.JobCompletionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+):
+    """Log actual depth and cost at completion. Only valid when status is
+    'completion'. Only writable once (SRS section 5, BR-04). Fetches the
+    approved quotation to compute variance and depth overage (BR-04/05)."""
+    job = db.query(models.Job).filter(models.Job.id == str(job_id)).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "JOB_NOT_FOUND", "message": "No job with this ID exists."},
+        )
+
+    # FR-TRACK-03 acceptance criterion: reject if job isn't at completion.
+    if job.status != "completion":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "JOB_NOT_AT_COMPLETION",
+                "message": (
+                    f"Job status is '{job.status}'. Completion can only be "
+                    "logged when the job has reached the 'completion' stage."
+                ),
+            },
+        )
+
+    # BR-04: only writable once.
+    existing = db.query(models.JobCompletion).filter(
+        models.JobCompletion.job_id == str(job_id)
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ALREADY_COMPLETED",
+                "message": ("A completion record already exists for this job "
+                    "and cannot be overwritten (BR-04)."),
+            },
+        )
+
+    # Fetch approved quotation to get quoted_total + depth range for
+    # variance (BR-04) and depth overage (BR-05). The auth header is
+    # forwarded so the quotation service can verify job ownership.
+    auth_header = request.headers.get("Authorization", "")
+    try:
+        quotation = quotation_client.fetch_approved_quotation(str(job_id), auth_header)
+    except quotation_client.QuotationNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "NO_APPROVED_QUOTATION",
+                "message": ("No approved quotation found. A quotation must be "
+                    "approved before logging completion."),
+            },
+        )
+    except quotation_client.QuotationNotApproved as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "QUOTATION_NOT_APPROVED", "message": str(exc)},
+        )
+    except quotation_client.QuotationServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "QUOTATION_SERVICE_ERROR", "message": str(exc)},
+        )
+
+    quoted_total = quotation["total_estimate"]
+    actual_cost = Decimal(str(payload.actual_cost))
+
+    # BR-04: variance = actual_cost - quoted_total (negative = under budget).
+    variance = actual_cost - quoted_total
+
+    # BR-05: depth overage is priced if actual > quoted max. The overage
+    # rate isn't stored on the quotation response directly (it's a pricing
+    # rule config field), so for MVP we record the overage feet and set the
+    # charge to 0 with a TODO. The rate would need a pricing-rule lookup
+    # endpoint or embedding in the quotation response to automate this.
+    # See packages/contracts/openapi/quotation.yaml for what's available now.
+    depth_overage_ft = max(0.0, payload.actual_depth_ft - quotation["max_ft"])
+    depth_overage_charge = Decimal("0")  # TODO: fetch overage_rate_per_ft from pricing rule
+
+    from datetime import datetime, timezone
+    completed_at = datetime.now(timezone.utc)
+
+    completion = models.JobCompletion(
+        job_id=str(job_id),
+        actual_depth_ft=payload.actual_depth_ft,
+        depth_overage_ft=depth_overage_ft,
+        actual_cost=actual_cost,
+        quoted_total=quoted_total,
+        variance=variance,
+        depth_overage_charge=depth_overage_charge,
+        completed_at=completed_at,
+    )
+    db.add(completion)
+    db.commit()
+    db.refresh(completion)
+
+    # job.completed event - now we have the real data the schema requires.
+    events.job_completed(
+        job_id=str(job_id),
+        actual_depth_ft=payload.actual_depth_ft,
+        actual_cost=actual_cost,
+        completed_at=completed_at,
+    )
+
+    return _completion_to_response(completion)
+
+
+@app.get(
+    "/v1/jobs/{job_id}/completion/result",
+    response_model=schemas.JobCompletionResponse,
+)
+def get_job_completion(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
+):
+    """Read completion record and variance (FR-TRACK-04). Customers can
+    read their own job's record; contractor/admin can read any."""
+    job = db.query(models.Job).filter(models.Job.id == str(job_id)).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "JOB_NOT_FOUND", "message": "No job with this ID exists."},
+        )
+    if claims["role"] == "customer" and job.customer_id != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "You can only view your own job's completion record.",
+            },
+        )
+    completion = db.query(models.JobCompletion).filter(
+        models.JobCompletion.job_id == str(job_id)
+    ).first()
+    if not completion:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "COMPLETION_NOT_FOUND",
+                "message": "No completion record for this job yet.",
+            },
+        )
+    return _completion_to_response(completion)

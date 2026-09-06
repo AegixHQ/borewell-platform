@@ -84,3 +84,25 @@ def job_created(job_id: str, customer_id: str, location: dict, created_at) -> bo
 # rather than wired - Development Plan section 3's own rule: an
 # undocumented event is scope creep, not a free addition, the same as an
 # undocumented endpoint would be.
+
+
+def job_completed(
+    job_id: str,
+    actual_depth_ft: float,
+    actual_cost,
+    completed_at,
+) -> bool:
+    """Emit job.completed once actual depth/cost are logged (FR-TRACK-03).
+    Matches packages/contracts/events/job.completed.schema.json exactly:
+    required fields are job_id, actual_depth_ft, actual_cost, completed_at.
+    actual_cost serialized as str(Decimal) - same precision discipline as
+    job.quoted and payment.completed events (see those publishers).
+    """
+    if hasattr(completed_at, "isoformat"):
+        completed_at = completed_at.isoformat()
+    return publish("job.completed", {
+        "job_id": job_id,
+        "actual_depth_ft": actual_depth_ft,
+        "actual_cost": str(actual_cost),
+        "completed_at": str(completed_at),
+    })
