@@ -1,11 +1,8 @@
 import { useState } from "react";
-import { login, registerAccount, decodeJwtPayload } from "shared-ui";
+import { login, registerAccount, decodeJwtPayload, PLATFORM_SPINE_URL } from "shared-ui";
 import CustomerDashboard from "./dashboards/CustomerDashboard.jsx";
 import ContractorDashboard from "./dashboards/ContractorDashboard.jsx";
 import ResourceOwnerDashboard from "./dashboards/ResourceOwnerDashboard.jsx";
-
-const PLATFORM_SPINE_URL =
-  import.meta.env.VITE_PLATFORM_SPINE_URL || "http://localhost:8001";
 
 const ROLES = [
   { value: "customer", label: "Customer" },
