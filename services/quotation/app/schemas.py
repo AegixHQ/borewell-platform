@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -56,7 +57,10 @@ class QuotationGenerateRequest(BaseModel):
 
 class LineItem(BaseModel):
     label: str
-    amount: float
+    # Decimal, not float: line-item amounts feed into subtotal/margin/total
+    # via repeated arithmetic (app/pricing/engine.py) - the Bug 2 fix needs
+    # to survive serialization, not just live in the DB column type.
+    amount: Decimal
 
 
 class DepthRange(BaseModel):
@@ -72,10 +76,13 @@ class QuotationResponse(BaseModel):
     status: str
     estimated_depth_range: DepthRange
     line_items: list[LineItem]
-    subtotal: float
-    margin_amount: float
+    # Decimal (not float) for the same reason as LineItem.amount above -
+    # these are computed, summed, and compared for exact equality downstream
+    # (payments-data checks payload.amount against this total per SRS section 6).
+    subtotal: Decimal
+    margin_amount: Decimal
     minimum_charge_applied: bool
-    total_estimate: float
+    total_estimate: Decimal
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

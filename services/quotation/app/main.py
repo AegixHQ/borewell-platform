@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import events, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.estimation.engine import estimate_depth
@@ -262,6 +262,15 @@ def generate_quotation(
     db.add(quotation)
     db.commit()
     db.refresh(quotation)
+    # Fire-and-forget (see app/events.py) - quotation is already committed;
+    # a dropped event means platform-spine/notifications won't react to it
+    # automatically, not that the quotation wasn't generated.
+    events.job_quoted(
+        job_id=quotation.job_id,
+        quotation_id=quotation.id,
+        total_estimate=quotation.total,
+        quoted_at=quotation.created_at,
+    )
     return _quotation_to_response(quotation)
 
 

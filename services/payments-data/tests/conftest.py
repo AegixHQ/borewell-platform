@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("JWT_SECRET", "test-secret-for-ci-and-local-tests-only")
 
 import uuid
+from decimal import Decimal
 
 import jwt
 import pytest
@@ -29,10 +30,17 @@ def make_token(user_id: str, role: str) -> str:
     return jwt.encode({"sub": stable_uuid, "role": role}, JWT_SECRET_FOR_TESTS, algorithm="HS256")
 
 
-def fake_quotation_fetcher(status="approved", total_estimate=95450.0, job_id=None):
+def fake_quotation_fetcher(status="approved", total_estimate=Decimal("95450.00"), job_id=None):
     """Stand-in for the real quotation_client.fetch_quotation call, so
     tests exercise the amount/approval/ownership-checking logic in main.py
-    without needing a live quotation service or mocking httpx internals."""
+    without needing a live quotation service or mocking httpx internals.
+
+    total_estimate defaults to Decimal, not float, to match what the real
+    fetch_quotation now returns (it converts quotation service's numeric-
+    string wire format to Decimal) - a float-typed test double here would
+    silently stop testing the exact-equality comparison main.py actually
+    performs against real traffic.
+    """
     resolved_job_id = job_id or DEFAULT_JOB_ID
 
     def _fetch(quotation_id: str, auth_header: str) -> dict:
@@ -91,7 +99,7 @@ def client_factory():
     'returns' - a different status/total/job_id, or a raised error."""
     engines = []
 
-    def _make(status="approved", total_estimate=95450.0, job_id=None, fetcher=None):
+    def _make(status="approved", total_estimate=Decimal("95450.00"), job_id=None, fetcher=None):
         engine = create_engine(
             TEST_DATABASE_URL,
             connect_args={"check_same_thread": False},

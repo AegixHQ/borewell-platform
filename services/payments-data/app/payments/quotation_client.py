@@ -21,6 +21,7 @@ override them via FastAPI's dependency injection instead of mocking httpx
 internals - see tests/conftest.py.
 """
 import os
+from decimal import Decimal
 
 import httpx
 
@@ -59,4 +60,17 @@ def fetch_quotation(quotation_id: str, auth_header: str) -> dict:
         raise QuotationAccessDenied("caller does not own this quotation")
     if response.status_code != 200:
         raise QuotationServiceError(f"quotation service returned {response.status_code}")
-    return response.json()
+
+    body = response.json()
+    # quotation service serializes total_estimate as a numeric *string*
+    # (e.g. "95450.00"), not a JSON number - because Decimal, once JSON-
+    # encoded as a number, would lose exactly the precision the Bug 2 fix
+    # was for (JSON numbers are IEEE-754 doubles in every real parser,
+    # this project's included). Convert explicitly here rather than trusting
+    # whatever type json.loads happens to give a bare numeric literal.
+    # Decimal(str(x)) discipline still applies even though this is already
+    # a string: total_estimate is guaranteed to be a str here, not a float,
+    # so this is exact - see app/models.py's MONEY comment in both services.
+    if "total_estimate" in body and body["total_estimate"] is not None:
+        body["total_estimate"] = Decimal(str(body["total_estimate"]))
+    return body

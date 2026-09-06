@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import events, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.payments.quotation_client import (
@@ -167,6 +167,8 @@ def create_payment(
         )
 
     # SRS section 6 validation rule: amount must exactly match the approved total.
+    # Both sides are Decimal now (see quotation_client.fetch_quotation) - this
+    # is a real exact-equality check, not float-approximate.
     quoted_total = quotation.get("total_estimate")
     if quoted_total != payload.amount:
         raise HTTPException(
@@ -255,6 +257,16 @@ def confirm_payment(
     payment.status = "completed"
     db.commit()
     db.refresh(payment)
+    # Fire-and-forget (see app/events.py) - payment status is already
+    # committed; a dropped event means nothing downstream (e.g. the
+    # deferred quoted-vs-actual variance record, US-11) reacts automatically,
+    # not that the payment wasn't recorded as completed.
+    events.payment_completed(
+        payment_id=payment.id,
+        job_id=payment.job_id,
+        amount=payment.amount,
+        completed_at=payment.updated_at,
+    )
     return _payment_to_response(payment)
 
 

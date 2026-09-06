@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        app: [contractor-app, resource-owner-app, customer-app, shared-ui]
+        app: [web-app, shared-ui]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

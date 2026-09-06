@@ -208,9 +208,14 @@ components:
             type: object
             properties:
               label: { type: string }
-              amount: { type: number }
-        subtotal: { type: number }
-        margin_amount: { type: number }
+              # string, not number: serialized from Decimal to avoid the
+              # float round-trip the Bug 2 fix exists to prevent - see
+              # services/quotation/app/models.py's MONEY comment. Consumers
+              # (payments-data, frontend) must parse this as a decimal
+              # string, not rely on JSON-number float parsing.
+              amount: { type: string, format: decimal, example: "1500.00" }
+        subtotal: { type: string, format: decimal, example: "83000.00" }
+        margin_amount: { type: string, format: decimal, example: "12450.00" }
         minimum_charge_applied: { type: boolean }
-        total_estimate: { type: number }
+        total_estimate: { type: string, format: decimal, example: "95450.00" }
         created_at: { type: string, format: date-time }

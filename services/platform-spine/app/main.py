@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import events, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.job_state_machine import InvalidTransitionError, validate_transition
@@ -163,6 +163,15 @@ def create_job(
     db.add(job)
     db.commit()
     db.refresh(job)
+    # Fire-and-forget (see app/events.py) - a dropped event means quotation
+    # service won't auto-react to this job, not that the job wasn't created.
+    # The job row (just committed) is the authoritative record either way.
+    events.job_created(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        location={"lat": job.location_lat, "lng": job.location_lng},
+        created_at=job.created_at,
+    )
     return _job_to_response(job)
 
 

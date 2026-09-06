@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from tests.conftest import DEFAULT_JOB_ID, access_denied_fetcher, make_token, not_found_fetcher
 
@@ -23,7 +24,10 @@ def test_customer_can_create_payment_for_approved_quotation(client):
     assert resp.status_code == 201
     body = resp.json()
     assert body["status"] == "pending"
-    assert body["amount"] == 95450.0
+    # amount is now a numeric string on the wire (Decimal, not float - see
+    # app/schemas.py), compared via Decimal rather than against a hardcoded
+    # string so this actually verifies precision, not just formatting.
+    assert Decimal(body["amount"]) == Decimal("95450.00")
 
 
 def test_contractor_cannot_create_payment(client):
@@ -78,6 +82,38 @@ def test_amount_mismatch_rejects_payment(client_factory):
     resp = c.post(
         "/v1/payments",
         json=_payment_payload(amount=1.0),
+        headers={"Authorization": f"Bearer {CUST_TOKEN}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "AMOUNT_MISMATCH"
+
+
+def test_amount_matching_to_the_paisa_is_accepted_not_a_float_near_miss(client_factory):
+    """Regression test for the Payment.amount Float->Numeric fix. 0.1 + 0.2
+    != 0.3 in float; a quotation total and a payment amount that are
+    genuinely equal to the paisa must not be rejected (or, in the other
+    direction, a genuinely different amount must not slip through) just
+    because both went through float arithmetic somewhere upstream. This is
+    the specific case a "just check total_estimate == 95450.0" assertion
+    would not catch - see test_customer_can_create_payment_for_approved_quotation
+    for the happy-path check this one is deliberately narrower than."""
+    c = client_factory(status="approved", total_estimate=Decimal("10000.30"))
+    resp = c.post(
+        "/v1/payments",
+        json=_payment_payload(amount=10000.30),
+        headers={"Authorization": f"Bearer {CUST_TOKEN}"},
+    )
+    assert resp.status_code == 201
+    assert Decimal(resp.json()["amount"]) == Decimal("10000.30")
+
+
+def test_amount_one_paisa_off_is_still_rejected(client_factory):
+    """The inverse of the above: a one-paisa difference must still be a
+    real mismatch, not swallowed by Decimal comparison being 'too loose'."""
+    c = client_factory(status="approved", total_estimate=Decimal("10000.30"))
+    resp = c.post(
+        "/v1/payments",
+        json=_payment_payload(amount=10000.31),
         headers={"Authorization": f"Bearer {CUST_TOKEN}"},
     )
     assert resp.status_code == 400

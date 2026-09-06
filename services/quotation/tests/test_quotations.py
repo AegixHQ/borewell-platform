@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from tests.conftest import make_token, user_uuid
 
@@ -52,9 +53,14 @@ def test_generate_quotation_with_pricing_rule(client):
     assert body["version"] == 1
     assert body["status"] == "draft"
     assert body["estimated_depth_range"] == {"min_ft": 250, "max_ft": 350, "confidence": "low"}
-    assert body["subtotal"] == 83000
-    assert body["margin_amount"] == 12450
-    assert body["total_estimate"] == 95450
+    # Compared as Decimal, not against raw string formatting or float - the
+    # response field is now a numeric string (see schemas.QuotationResponse;
+    # FastAPI serializes Decimal as a JSON string to avoid float round-trip
+    # loss), so this is what actually verifies the value is exact, not just
+    # that it happens to match a hardcoded string's formatting.
+    assert Decimal(body["subtotal"]) == Decimal("83000.00")
+    assert Decimal(body["margin_amount"]) == Decimal("12450.00")
+    assert Decimal(body["total_estimate"]) == Decimal("95450.00")
     assert body["minimum_charge_applied"] is False
     assert len(body["line_items"]) == 6
 
@@ -89,7 +95,7 @@ def test_minimum_charge_is_enforced(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     body = resp.json()
-    assert body["total_estimate"] == 50000
+    assert Decimal(body["total_estimate"]) == Decimal("50000")
     assert body["minimum_charge_applied"] is True
 
 
@@ -109,13 +115,13 @@ def test_editing_quotation_creates_new_version(client):
     assert edit_resp.status_code == 201
     body = edit_resp.json()
     assert body["version"] == 2
-    assert body["total_estimate"] == 99999
+    assert Decimal(body["total_estimate"]) == Decimal("99999")
     assert body["job_id"] == job_id
     # original stays untouched - append-only versioning, not mutation
     original = client.get(
         f"/v1/quotations/{quotation_id}", headers={"Authorization": f"Bearer {token}"}
     )
-    assert original.json()["total_estimate"] == 95450
+    assert Decimal(original.json()["total_estimate"]) == Decimal("95450.00")
 
 
 def test_other_contractor_cannot_edit_quotation(client):
@@ -152,7 +158,7 @@ def test_get_latest_quotation_for_job_returns_newest_version(client):
     )
     assert resp.status_code == 200
     assert resp.json()["version"] == 2
-    assert resp.json()["total_estimate"] == 88888
+    assert Decimal(resp.json()["total_estimate"]) == Decimal("88888")
 
 
 def test_latest_quotation_404_when_none_exists(client):

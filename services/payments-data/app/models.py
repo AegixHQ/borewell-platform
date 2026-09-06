@@ -1,12 +1,19 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, String
+from sqlalchemy import Column, DateTime, Numeric, String
 from sqlalchemy import Enum as SAEnum
 
 from app.database import Base
 
 PAYMENT_STATUSES = ("pending", "completed", "failed")
+
+# Same Bug 2 fix as quotation service's MONEY type (app/models.py there):
+# Float loses precision on repeated arithmetic and, worse, on the exact
+# equality check in main.py against the quotation's total_estimate (SRS
+# section 6: "reject mismatches" - not "reject if the difference exceeds
+# some epsilon"). This column was the one place that fix hadn't landed yet.
+MONEY = Numeric(precision=12, scale=2)
 
 
 def new_uuid() -> str:
@@ -24,7 +31,7 @@ class Payment(Base):
     job_id = Column(String(36), nullable=False, index=True)
     quotation_id = Column(String(36), nullable=False, index=True)
     customer_id = Column(String(36), nullable=False, index=True)
-    amount = Column(Float, nullable=False)
+    amount = Column(MONEY, nullable=False)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
     status = Column(
         SAEnum(*PAYMENT_STATUSES, name="payment_status"), nullable=False, default="pending"
