@@ -97,6 +97,14 @@ def test_minimum_charge_is_enforced(client):
     body = resp.json()
     assert Decimal(body["total_estimate"]) == Decimal("50000")
     assert body["minimum_charge_applied"] is True
+    # SRS section 11 acceptance criterion is a single compound statement:
+    # never below minimum AND always depth range + confidence. The minimum-
+    # charge path is exactly the edge case where a depth/confidence field
+    # could get dropped by an early-return special case - assert it here,
+    # not just in the general-case test below.
+    assert "min_ft" in body["estimated_depth_range"]
+    assert "max_ft" in body["estimated_depth_range"]
+    assert body["estimated_depth_range"]["confidence"] in ("low", "medium", "high")
 
 
 def test_editing_quotation_creates_new_version(client):

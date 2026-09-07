@@ -101,6 +101,14 @@ def test_skipping_a_status_is_rejected(client):
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "INVALID_TRANSITION"
 
+    # SRS section 11 acceptance criterion, verbatim: "...returns an error
+    # AND the job's status is unchanged" - a 400 alone doesn't prove the
+    # row wasn't mutated before the error was raised. Re-fetch and check.
+    get_resp = client.get(
+        f"/v1/jobs/{job_id}", headers={"Authorization": f"Bearer {contractor_token}"}
+    )
+    assert get_resp.json()["status"] == "lead"
+
 
 def test_customer_cannot_advance_job_status(client):
     cust_token = _register_and_login(client, "custE@example.com", "customer")

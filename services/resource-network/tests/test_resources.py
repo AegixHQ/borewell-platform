@@ -24,6 +24,48 @@ def test_customer_cannot_create_resource(client):
     assert resp.status_code == 403
 
 
+def test_customer_cannot_list_resources(client):
+    # FR-AUTH-04: "a customer token shall not be able to call any
+    # contractor-only endpoint" - list was the one contractor-only route
+    # in this service never actually exercised with a customer token.
+    token = make_token("cust-list", "customer")
+    resp = client.get("/v1/resources", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+
+
+def test_customer_cannot_get_single_resource(client):
+    owner_token = make_token("contractor-getcheck", "contractor")
+    created = client.post(
+        "/v1/resources",
+        json={"resource_type": "rig", "name": "Rig For Get Check"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    ).json()
+
+    cust_token = make_token("cust-get", "customer")
+    resp = client.get(
+        f"/v1/resources/{created['resource_id']}",
+        headers={"Authorization": f"Bearer {cust_token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_customer_cannot_update_resource_status(client):
+    owner_token = make_token("contractor-patchcheck", "contractor")
+    created = client.post(
+        "/v1/resources",
+        json={"resource_type": "rig", "name": "Rig For Patch Check"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    ).json()
+
+    cust_token = make_token("cust-patch", "customer")
+    resp = client.patch(
+        f"/v1/resources/{created['resource_id']}",
+        json={"status": "in_use"},
+        headers={"Authorization": f"Bearer {cust_token}"},
+    )
+    assert resp.status_code == 403
+
+
 def test_invalid_resource_type_rejected(client):
     token = make_token("contractor-2", "contractor")
     resp = client.post(

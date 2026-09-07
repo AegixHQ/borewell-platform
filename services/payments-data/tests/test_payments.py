@@ -59,6 +59,46 @@ def test_duplicate_idempotency_key_returns_same_payment_not_a_new_one(client):
     assert len(matching) == 1
 
 
+def test_duplicate_idempotency_key_still_results_in_exactly_one_completed_payment(client):
+    # SRS section 11's exact wording: "...results in exactly one
+    # `completed` payment record" - not just "one record" (the test above
+    # never advances past 'pending', since confirm is admin-only). This is
+    # the literal criterion: submit twice, confirm, count completed rows.
+    key = str(uuid.uuid4())
+    payload = _payment_payload(idempotency_key=key)
+
+    first = client.post(
+        "/v1/payments", json=payload, headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    )
+    second = client.post(
+        "/v1/payments", json=payload, headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    )
+    assert first.json()["payment_id"] == second.json()["payment_id"]
+    payment_id = first.json()["payment_id"]
+
+    admin_token = make_token("admin-fr-pay", "admin")
+    confirm_resp = client.post(
+        f"/v1/payments/{payment_id}/confirm", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert confirm_resp.status_code == 200
+    assert confirm_resp.json()["status"] == "completed"
+
+    # A third submission with the same key, after confirmation, must still
+    # not create a second row - idempotency doesn't stop applying once a
+    # payment moves past 'pending'.
+    third = client.post(
+        "/v1/payments", json=payload, headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    )
+    assert third.status_code == 201
+    assert third.json()["payment_id"] == payment_id
+
+    listing = client.get("/v1/payments", headers={"Authorization": f"Bearer {CUST_TOKEN}"})
+    completed = [p for p in listing.json() if p["status"] == "completed"]
+    assert len(completed) == 1
+    assert completed[0]["payment_id"] == payment_id
+
+
+
 def test_missing_idempotency_key_rejected(client):
     payload = _payment_payload()
     del payload["idempotency_key"]
