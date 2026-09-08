@@ -14,6 +14,7 @@ from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.estimation.engine import estimate_depth
 from app.jobs.job_client import JobNotFound, JobServiceError, fetch_job
+from app.location.location_client import lookup_service_area
 from app.pricing.engine import calculate_quotation, to_money
 
 app = FastAPI(
@@ -93,6 +94,14 @@ def readyz(db: Session = Depends(get_db)):
 # recording who its real customer is.
 def get_job_fetcher():
     return fetch_job
+
+
+# Same override-for-testing pattern as get_job_fetcher above. A location
+# lookup MISS (returns None) is the expected, common outcome outside pilot
+# service areas - see app/location/location_client.py's docstring for why
+# this fails open rather than closed, unlike get_job_fetcher.
+def get_location_fetcher():
+    return lookup_service_area
 
 
 # ---------- pricing rules (FR-K14) ----------
@@ -191,6 +200,7 @@ def generate_quotation(
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("contractor")),
     job_fetcher=Depends(get_job_fetcher),
+    location_fetcher=Depends(get_location_fetcher),
 ):
     rule = _get_rule(db, claims["sub"], payload.job_type)
     if not rule:
@@ -224,10 +234,12 @@ def generate_quotation(
             },
         )
 
-    # payload.location is part of the committed contract and will feed the
-    # estimation engine once historical-data averaging ships (RFC 0001
-    # section 6 / section 7, Sprint 7-8) - deliberately unused here in MVP.
-    depth = estimate_depth(rule.assumed_depth_ft, rule.depth_confidence_band_ft)
+    # Location-based depth estimation (docs/adr/0004, pilot service areas).
+    # Fails open by design (location_client.py) - a miss or lookup outage
+    # falls back to the contractor's flat assumed_depth_ft, never blocks
+    # generation. This is the expected path outside pilot villages.
+    service_area = location_fetcher(payload.location.lat, payload.location.lng, auth_header)
+    depth = estimate_depth(rule.assumed_depth_ft, rule.depth_confidence_band_ft, service_area)
     pricing = calculate_quotation(
         assumed_depth_ft=rule.assumed_depth_ft,
         base_rate_per_ft=rule.base_rate_per_ft,

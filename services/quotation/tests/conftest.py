@@ -9,7 +9,7 @@ import uuid
 import jwt
 import pytest
 from app.database import Base, get_db
-from app.main import app, get_job_fetcher
+from app.main import app, get_job_fetcher, get_location_fetcher
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -51,6 +51,18 @@ def fake_job_fetcher(customer_id=None):
     return _fetch
 
 
+def fake_location_fetcher(service_area=None):
+    """Stand-in for app.location.location_client.lookup_service_area.
+    Defaults to None (no pilot-area coverage) - matches real MVP behavior
+    for every location outside the pilot villages, which is what most
+    tests should exercise unless they're specifically testing docs/adr/0004."""
+
+    def _fetch(lat: float, lng: float, auth_header: str):
+        return service_area
+
+    return _fetch
+
+
 @pytest.fixture()
 def client():
     engine = create_engine(
@@ -70,6 +82,7 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_job_fetcher] = lambda: fake_job_fetcher()
+    app.dependency_overrides[get_location_fetcher] = lambda: fake_location_fetcher()
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -82,7 +95,7 @@ def client_factory():
     need the job fetch to fail (not-found / service-unavailable)."""
     engines = []
 
-    def _make(customer_id=None, job_fetcher=None):
+    def _make(customer_id=None, job_fetcher=None, location_fetcher=None):
         engine = create_engine(
             TEST_DATABASE_URL,
             connect_args={"check_same_thread": False},
@@ -102,6 +115,9 @@ def client_factory():
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_job_fetcher] = (
             job_fetcher if job_fetcher is not None else (lambda: fake_job_fetcher(customer_id))
+        )
+        app.dependency_overrides[get_location_fetcher] = (
+            location_fetcher if location_fetcher is not None else (lambda: fake_location_fetcher())
         )
         return TestClient(app)
 

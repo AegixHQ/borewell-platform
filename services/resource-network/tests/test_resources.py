@@ -1,8 +1,14 @@
+"""
+Resource CRUD, owned by resource_owner (marketplace model - see
+docs/adr/0004 for the pivot from the earlier single-contractor-owns-its-
+own-fleet design). A contractor never owns a resource directly; they
+request to book one (see test_matching.py for booking-request tests).
+"""
 from tests.conftest import make_token
 
 
-def test_contractor_can_create_resource(client):
-    token = make_token("contractor-1", "contractor")
+def test_resource_owner_can_create_resource(client):
+    token = make_token("owner-1", "resource_owner")
     resp = client.post(
         "/v1/resources",
         json={"resource_type": "rig", "name": "Rotary Rig #1"},
@@ -10,8 +16,8 @@ def test_contractor_can_create_resource(client):
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "available"
     assert body["resource_type"] == "rig"
+    assert body["status"] == "available"
 
 
 def test_customer_cannot_create_resource(client):
@@ -24,17 +30,25 @@ def test_customer_cannot_create_resource(client):
     assert resp.status_code == 403
 
 
+def test_contractor_cannot_create_resource(client):
+    # The pivot's whole point: a contractor books, they don't own.
+    token = make_token("contractor-cannotcreate", "contractor")
+    resp = client.post(
+        "/v1/resources",
+        json={"resource_type": "rig", "name": "Rotary Rig #1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
 def test_customer_cannot_list_resources(client):
-    # FR-AUTH-04: "a customer token shall not be able to call any
-    # contractor-only endpoint" - list was the one contractor-only route
-    # in this service never actually exercised with a customer token.
     token = make_token("cust-list", "customer")
     resp = client.get("/v1/resources", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
 
 
 def test_customer_cannot_get_single_resource(client):
-    owner_token = make_token("contractor-getcheck", "contractor")
+    owner_token = make_token("owner-getcheck", "resource_owner")
     created = client.post(
         "/v1/resources",
         json={"resource_type": "rig", "name": "Rig For Get Check"},
@@ -50,7 +64,7 @@ def test_customer_cannot_get_single_resource(client):
 
 
 def test_customer_cannot_update_resource_status(client):
-    owner_token = make_token("contractor-patchcheck", "contractor")
+    owner_token = make_token("owner-patchcheck", "resource_owner")
     created = client.post(
         "/v1/resources",
         json={"resource_type": "rig", "name": "Rig For Patch Check"},
@@ -67,65 +81,71 @@ def test_customer_cannot_update_resource_status(client):
 
 
 def test_invalid_resource_type_rejected(client):
-    token = make_token("contractor-2", "contractor")
+    token = make_token("owner-2", "resource_owner")
     resp = client.post(
         "/v1/resources",
-        json={"resource_type": "spaceship", "name": "Rig"},
+        json={"resource_type": "bulldozer", "name": "Not A Real Type"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 422
 
 
-def test_list_resources_filters_by_own_contractor(client):
-    token1 = make_token("contractor-a", "contractor")
-    token2 = make_token("contractor-b", "contractor")
+def test_list_resources_filters_by_own_owner(client):
+    token_a = make_token("owner-a", "resource_owner")
+    token_b = make_token("owner-b", "resource_owner")
     client.post(
         "/v1/resources",
-        json={"resource_type": "equipment", "name": "Compressor A"},
-        headers={"Authorization": f"Bearer {token1}"},
+        json={"resource_type": "rig", "name": "Owner A Rig"},
+        headers={"Authorization": f"Bearer {token_a}"},
     )
-    resp = client.get("/v1/resources", headers={"Authorization": f"Bearer {token2}"})
-    assert resp.status_code == 200
-    assert resp.json() == []
+    client.post(
+        "/v1/resources",
+        json={"resource_type": "rig", "name": "Owner B Rig"},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+
+    resp = client.get("/v1/resources", headers={"Authorization": f"Bearer {token_a}"})
+    names = [r["name"] for r in resp.json()]
+    assert names == ["Owner A Rig"]
 
 
 def test_list_resources_status_filter(client):
-    token = make_token("contractor-filter", "contractor")
+    token = make_token("owner-3", "resource_owner")
     r1 = client.post(
         "/v1/resources",
-        json={"resource_type": "rig", "name": "Rig X"},
+        json={"resource_type": "rig", "name": "Available Rig"},
         headers={"Authorization": f"Bearer {token}"},
     ).json()
-    client.post(
+    r2 = client.post(
         "/v1/resources",
-        json={"resource_type": "equipment", "name": "Pump Y"},
+        json={"resource_type": "rig", "name": "Busy Rig"},
         headers={"Authorization": f"Bearer {token}"},
-    )
+    ).json()
     client.patch(
-        f"/v1/resources/{r1['resource_id']}",
+        f"/v1/resources/{r2['resource_id']}",
         json={"status": "in_use"},
         headers={"Authorization": f"Bearer {token}"},
     )
+
     resp = client.get(
-        "/v1/resources?status_filter=in_use", headers={"Authorization": f"Bearer {token}"}
+        "/v1/resources?status_filter=available", headers={"Authorization": f"Bearer {token}"}
     )
-    assert resp.status_code == 200
-    assert len(resp.json()) == 1
-    assert resp.json()[0]["name"] == "Rig X"
+    names = [r["name"] for r in resp.json()]
+    assert names == ["Available Rig"]
+    assert r1["resource_id"] != r2["resource_id"]
 
 
 def test_update_resource_status_through_lifecycle(client):
-    token = make_token("contractor-lifecycle", "contractor")
+    token = make_token("owner-4", "resource_owner")
     created = client.post(
         "/v1/resources",
-        json={"resource_type": "labour", "name": "Crew A"},
+        json={"resource_type": "rig", "name": "Lifecycle Rig"},
         headers={"Authorization": f"Bearer {token}"},
     ).json()
-    resource_id = created["resource_id"]
 
-    for new_status in ["reserved", "assigned", "in_use", "returned"]:
+    for new_status in ("reserved", "assigned", "in_use", "returned"):
         resp = client.patch(
-            f"/v1/resources/{resource_id}",
+            f"/v1/resources/{created['resource_id']}",
             json={"status": new_status},
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -134,65 +154,48 @@ def test_update_resource_status_through_lifecycle(client):
 
 
 def test_invalid_status_rejected(client):
-    token = make_token("contractor-badstatus", "contractor")
+    token = make_token("owner-5", "resource_owner")
     created = client.post(
         "/v1/resources",
-        json={"resource_type": "rig", "name": "Rig Z"},
+        json={"resource_type": "rig", "name": "Status Check Rig"},
         headers={"Authorization": f"Bearer {token}"},
     ).json()
+
     resp = client.patch(
         f"/v1/resources/{created['resource_id']}",
-        json={"status": "on_vacation"},
+        json={"status": "on_fire"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 422
 
 
-def test_other_contractor_cannot_view_or_edit_resource(client):
-    token = make_token("contractor-owner2", "contractor")
+def test_other_owner_cannot_view_or_edit_resource(client):
+    owner_a = make_token("owner-6a", "resource_owner")
+    owner_b = make_token("owner-6b", "resource_owner")
     created = client.post(
         "/v1/resources",
-        json={"resource_type": "rig", "name": "Rig Private"},
-        headers={"Authorization": f"Bearer {token}"},
+        json={"resource_type": "rig", "name": "Owner A's Rig"},
+        headers={"Authorization": f"Bearer {owner_a}"},
     ).json()
-    other_token = make_token("contractor-other2", "contractor")
 
     get_resp = client.get(
         f"/v1/resources/{created['resource_id']}",
-        headers={"Authorization": f"Bearer {other_token}"},
+        headers={"Authorization": f"Bearer {owner_b}"},
     )
     assert get_resp.status_code == 403
 
     patch_resp = client.patch(
         f"/v1/resources/{created['resource_id']}",
         json={"status": "in_use"},
-        headers={"Authorization": f"Bearer {other_token}"},
+        headers={"Authorization": f"Bearer {owner_b}"},
     )
     assert patch_resp.status_code == 403
 
 
 def test_get_nonexistent_resource_404s(client):
-    import uuid as uuid_module
-
-    token = make_token("contractor-404", "contractor")
+    token = make_token("owner-7", "resource_owner")
     resp = client.get(
-        f"/v1/resources/{uuid_module.uuid4()}", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert resp.status_code == 404
-
-
-def test_resource_owner_cannot_create_resource_yet(client):
-    # Deliberately still rejected: this MVP's data model keys resources to
-    # contractor_id only - there's no independent resource-owner-owned
-    # inventory concept yet. Granting this role CRUD access before that
-    # data model exists would let a resource_owner see an always-empty
-    # list and call it "done," which is worse than not shipping it. Real
-    # rig management (RFC 0001 section 7, Phase 1) needs a schema change
-    # here, not just a role check - revisit this test when that lands.
-    token = make_token("rigowner-1", "resource_owner")
-    resp = client.post(
-        "/v1/resources",
-        json={"resource_type": "rig", "name": "My Rig"},
+        "/v1/resources/00000000-0000-0000-0000-000000000000",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404

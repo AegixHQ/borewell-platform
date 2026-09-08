@@ -17,6 +17,10 @@ paths:
                 resource_type: { type: string, enum: [rig, equipment, labour] }
                 name: { type: string }
                 notes: { type: string }
+                lat: { type: number, description: "Resource's base/depot location. Required for this resource to be discoverable via POST /v1/resources/match." }
+                lng: { type: number }
+                hourly_rate: { type: string, format: decimal, description: "INR per hour, e.g. \"850.00\"" }
+                vehicle_type: { type: string, description: "e.g. \"DTH Rig - Truck Mounted\", \"Rotary Rig\". Free text in MVP - not an enum, since rig/vehicle naming varies by contractor and region." }
       responses:
         '201':
           description: Resource created
@@ -90,21 +94,27 @@ paths:
           description: Resource not found
   /v1/resources/match:
     post:
-      summary: "NOT IMPLEMENTED YET - Phase 1 (RFC 0001 section 7). Declared here so the contract documents the intended future shape; contract-check treats an unimplemented-but-declared route as informational, not a failure."
+      summary: |
+        Marketplace search: find AVAILABLE resources across ALL resource
+        owners nearest to a given point, ranked by straight-line distance
+        (Google-Maps-style). Contractor only. Only resources with lat/lng
+        set are searchable - a resource created without a location is
+        excluded, not returned with a null distance. Contractors do not
+        own these resources - book one via POST /v1/bookings.
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [job_id, requirements]
+              required: [lat, lng]
               properties:
-                job_id: { type: string, format: uuid }
-                requirements:
-                  type: array
-                  items: { type: string }
+                lat: { type: number, description: "Customer/job site latitude" }
+                lng: { type: number }
+                resource_type: { type: string, enum: [rig, equipment, labour], description: "Optional filter" }
+                max_results: { type: integer, default: 5, minimum: 1, maximum: 20 }
       responses:
         '200':
-          description: Ranked suggestions (not implemented in MVP)
+          description: Resources ranked nearest-first
           content:
             application/json:
               schema:
@@ -113,11 +123,194 @@ paths:
                   type: object
                   properties:
                     resource_id: { type: string, format: uuid }
-                    provider: { type: string }
-                    cost: { type: number }
+                    name: { type: string }
+                    resource_type: { type: string }
+                    status: { type: string }
+                    hourly_rate: { type: string, format: decimal }
+                    vehicle_type: { type: string }
                     distance_km: { type: number }
+        '403':
+          description: Contractor only
+  /v1/service-areas:
+    post:
+      summary: |
+        Create or update a pilot service area's water-depth estimate.
+        Contractor/admin only. Upserts by (name, district) - posting the
+        same area again updates it, doesn't duplicate (same convention as
+        quotation service's pricing-rules upsert).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, district, state, center_lat, center_lng, radius_km, estimated_water_depth_ft, confidence_band_ft]
+              properties:
+                name: { type: string }
+                district: { type: string }
+                state: { type: string }
+                center_lat: { type: number }
+                center_lng: { type: number }
+                radius_km: { type: number }
+                estimated_water_depth_ft: { type: number }
+                confidence_band_ft: { type: number }
+      responses:
+        '201':
+          description: Service area created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceArea'
+        '403':
+          description: Contractor/admin only
+    get:
+      summary: List all configured service areas.
+      responses:
+        '200':
+          description: Service area list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceArea'
+
+  /v1/service-areas/lookup:
+    get:
+      summary: |
+        Find the service area (if any) covering a given point, for
+        location-based depth estimation. Any authenticated role may call
+        this (quotation service calls it server-to-server on the
+        contractor's behalf). Returns 404 if the point falls outside every
+        configured area's radius - callers should fall back to the
+        contractor's flat assumed_depth_ft in that case, not treat 404 as
+        an error (this is the expected outcome outside the pilot villages).
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema: { type: number }
+        - name: lng
+          in: query
+          required: true
+          schema: { type: number }
+      responses:
+        '200':
+          description: Matching service area (nearest, if overlapping areas exist)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceArea'
+        '404':
+          description: No configured service area covers this point
+
+  /v1/bookings:
+    post:
+      summary: |
+        Contractor requests to book a resource found via POST
+        /v1/resources/match. Resource must be 'available'; only one
+        active (pending or accepted) request per resource at a time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_id]
+              properties:
+                resource_id: { type: string, format: uuid }
+                job_id: { type: string, format: uuid }
+                message: { type: string }
+      responses:
+        '201':
+          description: Booking request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingRequest'
+        '400':
+          description: Resource is not available
+        '404':
+          description: Resource not found
+        '409':
+          description: Resource already has an active request
+    get:
+      summary: |
+        Role-scoped list: resource_owner sees requests on their resources,
+        contractor sees requests they made.
+      parameters:
+        - name: status_filter
+          in: query
+          required: false
+          schema: { type: string, enum: [pending, accepted, rejected, cancelled] }
+      responses:
+        '200':
+          description: Booking request list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookingRequest'
+
+  /v1/bookings/{booking_id}/accept:
+    post:
+      summary: Owner accepts a pending request on their resource. Moves the resource to 'reserved'.
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingRequest'
+        '403':
+          description: Not your resource
+        '404':
+          description: Booking not found
+        '409':
+          description: Already resolved, or resource no longer available
+
+  /v1/bookings/{booking_id}/reject:
+    post:
+      summary: Owner rejects a pending request on their resource.
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingRequest'
+        '403':
+          description: Not your resource
+        '404':
+          description: Booking not found
+        '409':
+          description: Already resolved
+
 components:
   schemas:
+    BookingRequest:
+      type: object
+      properties:
+        booking_id: { type: string, format: uuid }
+        resource_id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        contractor_id: { type: string, format: uuid }
+        job_id: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [pending, accepted, rejected, cancelled] }
+        message: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        responded_at: { type: string, format: date-time, nullable: true }
+
     Resource:
       type: object
       properties:
@@ -126,4 +319,30 @@ components:
         name: { type: string }
         status: { type: string, enum: [available, reserved, assigned, in_use, returned] }
         notes: { type: string }
+        lat: { type: number, nullable: true }
+        lng: { type: number, nullable: true }
+        hourly_rate: { type: string, format: decimal, nullable: true }
+        vehicle_type: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
+
+    ServiceArea:
+      type: object
+      description: |
+        Pilot-scope location reference data (Madurai district villages).
+        estimated_water_depth_ft is a contractor/admin-editable estimate,
+        NOT a real geological measurement - see docs/adr/0004. Deliberately
+        a thin, swappable interface: a real groundwater API can replace the
+        lookup behind GET /v1/service-areas/lookup without changing quotation
+        service's client code, which only cares about the response shape.
+      properties:
+        area_id: { type: string, format: uuid }
+        name: { type: string, description: "e.g. \"Virudhunagar\"" }
+        district: { type: string }
+        state: { type: string }
+        center_lat: { type: number }
+        center_lng: { type: number }
+        radius_km: { type: number, description: "This area's estimate applies within this radius of the center point" }
+        estimated_water_depth_ft: { type: number }
+        confidence_band_ft: { type: number }
+        source: { type: string, description: "\"contractor_estimate\" in MVP. Reserved values for later: \"cgwb_api\", \"manual_survey\" etc once a real provider is integrated." }
+        updated_at: { type: string, format: date-time }
