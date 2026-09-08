@@ -1,0 +1,70 @@
+name: CI - deployment config
+
+# Validates that docker-compose.yml, docker-compose.prod.yml, and every
+# Dockerfile in the repo are actually buildable - not just "looks right."
+# This is the one thing the local sandbox this repo was largely built in
+# could NOT verify directly (no Docker daemon available there) - see
+# docs/deployment/PRODUCTION.md and the Dockerfiles' own comments for
+# where that honest gap was flagged. This workflow closes it: GitHub
+# Actions runners have a real Docker daemon, so this is the first place
+# these Dockerfiles get an actual `docker build`, not just a read-through.
+
+on:
+  push:
+    paths:
+      - 'docker-compose.yml'
+      - 'docker-compose.prod.yml'
+      - '.env.prod.example'
+      - 'services/*/Dockerfile'
+      - 'apps/web-app/Dockerfile'
+      - 'apps/web-app/Dockerfile.dev'
+      - 'apps/web-app/nginx.conf'
+      - '.github/workflows/ci-deployment.yml'
+  pull_request:
+    paths:
+      - 'docker-compose.yml'
+      - 'docker-compose.prod.yml'
+      - '.env.prod.example'
+      - 'services/*/Dockerfile'
+      - 'apps/web-app/Dockerfile'
+      - 'apps/web-app/Dockerfile.dev'
+      - 'apps/web-app/nginx.conf'
+      - '.github/workflows/ci-deployment.yml'
+
+jobs:
+  validate-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml (dev)
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate docker-compose.prod.yml against .env.prod.example
+        # Real .env.prod is gitignored and never exists in CI - the
+        # .example file has placeholder values for every variable, which
+        # is all `config` needs to confirm the file's structure and
+        # interpolation syntax are actually correct (not whether the
+        # placeholder secrets are usable, which they deliberately aren't).
+        run: docker compose -f docker-compose.prod.yml --env-file .env.prod.example config --quiet
+
+  build-backend-images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [platform-spine, quotation, resource-network, payments-data]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.service }} image
+        run: docker build -t borewell-${{ matrix.service }}:ci ./services/${{ matrix.service }}
+
+  build-frontend-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build web-app production image (nginx, multi-stage)
+        run: docker build -t borewell-web-app-prod:ci -f apps/web-app/Dockerfile .
+
+      - name: Build web-app dev image (Vite dev server)
+        run: docker build -t borewell-web-app-dev:ci -f apps/web-app/Dockerfile.dev .

@@ -1,0 +1,26 @@
+# Dev-mode only - runs the Vite dev server with hot reload against a
+# bind-mounted source tree (see docker-compose.yml's web-app service
+# volumes). NOT used for production - see Dockerfile (multi-stage,
+# nginx-served static build) and docker-compose.prod.yml for that.
+#
+# Same build-context-must-be-repo-root reasoning as the production
+# Dockerfile (shared-ui is an npm workspace member, not a published
+# package) - see that file's header comment for the full explanation.
+
+FROM node:20-slim
+WORKDIR /repo
+
+COPY package.json package-lock.json ./
+COPY apps/web-app/package.json apps/web-app/package.json
+COPY apps/shared-ui/package.json apps/shared-ui/package.json
+RUN npm install
+
+# Source is bind-mounted over this at runtime (docker-compose.yml) for
+# hot reload - COPY here only so `docker build` (without compose) still
+# produces a runnable image on its own.
+COPY apps/web-app apps/web-app
+COPY apps/shared-ui apps/shared-ui
+
+WORKDIR /repo/apps/web-app
+EXPOSE 5173
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

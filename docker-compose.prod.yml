@@ -1,0 +1,205 @@
+# Production compose file - single VM, per Architecture doc section 10:
+# "a single small cloud VM (or equivalent) running the same docker-compose.yml
+# used locally - deliberately simple. A single-contractor pilot does not
+# justify a managed container orchestration platform." This file is the
+# promoted, hardened version of that same idea - not a rewrite, not
+# Kubernetes. See docs/deployment/PRODUCTION.md for the full deploy runbook.
+#
+# Usage:
+#   cp .env.prod.example .env.prod
+#   # edit .env.prod - every CHANGE_ME value must be replaced, see that
+#   # file's own comments for how to generate each one
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Differences from docker-compose.yml (dev), and why each one exists:
+#   - No host-exposed Postgres/Redis ports. Dev compose exposes 5432-5435
+#     and 6379 for local debugging (psql, redis-cli from the host). In
+#     production those ports have no reason to be reachable from outside
+#     the Docker network - every real client goes through each service's
+#     own HTTP API, never the database directly (Architecture doc section
+#     4: "Services never call each other's databases directly").
+#   - Every JWT_SECRET is a real interpolated secret from .env.prod, not
+#     the shared literal "dev-only-secret-change-in-production" every dev
+#     service currently uses. All 4 services verify the same customer/
+#     contractor/resource_owner/admin JWTs (issued only by platform-spine -
+#     Architecture doc section 6), so all 4 need the SAME secret value,
+#     just no longer a hardcoded one committed to the repo.
+#   - web-app uses the production Dockerfile (nginx serving a built
+#     static bundle) instead of Dockerfile.dev (Vite dev server) - see
+#     apps/web-app/Dockerfile's header comment for why a dev server has
+#     no place serving real traffic.
+#   - restart: unless-stopped on every service - dev compose has no
+#     restart policy (you want a crashed dev container to stay stopped
+#     for you to inspect); production should recover from a container
+#     crash without a human re-running `docker compose up`.
+#   - No bind-mounted source anywhere - production runs the image that
+#     was built, not a live view of the host filesystem.
+
+services:
+  postgres-platform-spine:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: platform_spine
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_platform_spine:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U borewell -d platform_spine"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-quotation:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quotation
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_quotation:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U borewell -d quotation"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-resource-network:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: resource_network
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_resource_network:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U borewell -d resource_network"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-payments-data:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: payments_data
+      POSTGRES_USER: borewell
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_payments_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U borewell -d payments_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  platform-spine:
+    build: ./services/platform-spine
+    restart: unless-stopped
+    depends_on:
+      postgres-platform-spine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-platform-spine:5432/platform_spine
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRY_MINUTES: "60"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      QUOTATION_SERVICE_URL: http://quotation:8000
+    ports:
+      - "8001:8000"
+
+  quotation:
+    build: ./services/quotation
+    restart: unless-stopped
+    depends_on:
+      postgres-quotation:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-quotation:5432/quotation
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      RESOURCE_NETWORK_URL: http://resource-network:8000
+    ports:
+      - "8002:8000"
+
+  resource-network:
+    build: ./services/resource-network
+    restart: unless-stopped
+    depends_on:
+      postgres-resource-network:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-resource-network:5432/resource_network
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    ports:
+      - "8003:8000"
+
+  payments-data:
+    build: ./services/payments-data
+    restart: unless-stopped
+    depends_on:
+      postgres-payments-data:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-payments-data:5432/payments_data
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      QUOTATION_SERVICE_URL: http://quotation:8000
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    ports:
+      - "8004:8000"
+
+  web-app:
+    build:
+      context: .
+      dockerfile: apps/web-app/Dockerfile
+      args:
+        # Build-time, not runtime - Vite bakes these into the static JS
+        # bundle when the image is built (see that Dockerfile's comment).
+        # Must be the PUBLIC URL customers/contractors will actually reach
+        # this VM at (e.g. https://app.yourdomain.in or the VM's public
+        # IP), not "localhost" - localhost only makes sense when the
+        # browser and the backend are on the same machine, which is true
+        # for local dev but not for a real deployed pilot.
+        VITE_PLATFORM_SPINE_URL: ${PUBLIC_URL}:8001
+        VITE_QUOTATION_URL: ${PUBLIC_URL}:8002
+        VITE_RESOURCE_NETWORK_URL: ${PUBLIC_URL}:8003
+        VITE_PAYMENTS_URL: ${PUBLIC_URL}:8004
+    restart: unless-stopped
+    depends_on:
+      - platform-spine
+      - quotation
+      - resource-network
+      - payments-data
+    ports:
+      - "80:80"
+
+volumes:
+  pg_platform_spine:
+  pg_quotation:
+  pg_resource_network:
+  pg_payments_data:
