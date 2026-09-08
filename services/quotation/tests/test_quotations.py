@@ -377,7 +377,9 @@ def test_generate_quotation_uses_service_area_depth_when_matched(client_factory)
         return _fetch
 
     c = client_factory(location_fetcher=matched_location_fetcher)
-    token = _setup_rule(c, "contractor-servicearea", assumed_depth_ft=1000, depth_confidence_band_ft=10)
+    token = _setup_rule(
+        c, "contractor-servicearea", assumed_depth_ft=1000, depth_confidence_band_ft=10
+    )
 
     resp = c.post(
         "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
@@ -395,7 +397,9 @@ def test_generate_quotation_falls_back_to_flat_assumption_without_service_area_m
     is the expected outcome outside pilot villages and must reproduce
     exact pre-pilot MVP behavior: flat assumed_depth_ft, 'low' confidence."""
     c = client_factory()  # default location_fetcher returns None
-    token = _setup_rule(c, "contractor-nolocation", assumed_depth_ft=300, depth_confidence_band_ft=50)
+    token = _setup_rule(
+        c, "contractor-nolocation", assumed_depth_ft=300, depth_confidence_band_ft=50
+    )
 
     resp = c.post(
         "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}

@@ -2,12 +2,16 @@ import { useEffect, useState } from "react";
 import {
   PLATFORM_SPINE_URL,
   QUOTATION_URL,
+  RESOURCE_NETWORK_URL,
   listMyJobs,
   updateJobStatus,
   upsertPricingRule,
   listPricingRules,
   generateQuotation,
   getLatestQuotationForJob,
+  matchResources,
+  createBookingRequest,
+  listBookings,
 } from "shared-ui";
 
 const JOB_TYPES = ["residential", "agricultural", "commercial"];
@@ -363,6 +367,161 @@ function JobDetailPanel({ session, job, onJobsChanged, setError }) {
             {busy ? "Updating..." : `Advance to "${nextStage.replace(/_/g, " ")}"`}
           </button>
         </div>
+      )}
+
+      <NearbyResourcesPanel session={session} job={job} setError={setError} />
+    </div>
+  );
+}
+
+function NearbyResourcesPanel({ session, job, setError }) {
+  // Marketplace search (docs/adr/0004): finds AVAILABLE resources across
+  // ALL resource owners near the customer's address (job.location, which
+  // is already the address the contractor entered when creating the
+  // job), ranked by distance - the "enter the customer's address, see
+  // nearest rig owner + rate + vehicle type" flow.
+  const [results, setResults] = useState(null); // null = not searched yet
+  const [searching, setSearching] = useState(false);
+  const [myBookings, setMyBookings] = useState([]);
+  const [requestingId, setRequestingId] = useState(null);
+
+  useEffect(() => {
+    refreshMyBookings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.job_id]);
+
+  async function refreshMyBookings() {
+    try {
+      const list = await listBookings(RESOURCE_NETWORK_URL, session.token);
+      setMyBookings(list.filter((b) => b.job_id === job.job_id));
+    } catch {
+      // Non-critical for this panel - the search still works without it,
+      // just without the "already requested" indicator.
+    }
+  }
+
+  async function handleSearch() {
+    setSearching(true);
+    setError(null);
+    try {
+      const found = await matchResources(RESOURCE_NETWORK_URL, session.token, {
+        lat: job.location.lat,
+        lng: job.location.lng,
+        maxResults: 5,
+      });
+      setResults(found);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleRequest(resourceId) {
+    setRequestingId(resourceId);
+    setError(null);
+    try {
+      await createBookingRequest(RESOURCE_NETWORK_URL, session.token, {
+        resourceId,
+        jobId: job.job_id,
+      });
+      refreshMyBookings();
+    } catch (err) {
+      // Same pattern as JobDetailPanel's PRICING_RULE_MISSING handling
+      // above: these two codes have specific, actionable meanings - a
+      // generic err.message would just repeat the same idea in less
+      // predictable wording each time.
+      if (err.code === "RESOURCE_ALREADY_REQUESTED") {
+        setError("Someone else already requested this resource. Try another one, or refresh.");
+      } else if (err.code === "RESOURCE_NOT_AVAILABLE") {
+        setError("This resource is no longer available. Refresh to see current options.");
+      } else {
+        setError(err.message);
+      }
+      // Either way, refresh results so the list reflects reality rather
+      // than showing a now-stale "Request" button for a taken resource.
+      handleSearch();
+    } finally {
+      setRequestingId(null);
+    }
+  }
+
+  function statusForResource(resourceId) {
+    const booking = myBookings.find((b) => b.resource_id === resourceId);
+    return booking ? booking.status : null;
+  }
+
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid #ddd", paddingTop: 8 }}>
+      <h4 style={{ fontSize: 14, margin: "0 0 6px" }}>Nearby Rigs &amp; Equipment</h4>
+
+      {results === null && (
+        <button onClick={handleSearch} disabled={searching}>
+          {searching ? "Searching..." : "Find Nearby Rigs"}
+        </button>
+      )}
+
+      {results !== null && results.length === 0 && (
+        <p style={{ fontSize: 13, color: "#555" }}>
+          No available rigs or equipment found near this address yet.
+        </p>
+      )}
+
+      {results !== null && results.length > 0 && (
+        <>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                <th style={{ padding: 4 }}>Name</th>
+                <th style={{ padding: 4 }}>Vehicle</th>
+                <th style={{ padding: 4 }}>Rate/hr</th>
+                <th style={{ padding: 4 }}>Distance</th>
+                <th style={{ padding: 4 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r) => {
+                const bookingStatus = statusForResource(r.resource_id);
+                return (
+                  <tr key={r.resource_id} style={{ borderBottom: "1px solid #eee" }}>
+                    <td style={{ padding: 4 }}>{r.name}</td>
+                    <td style={{ padding: 4 }}>{r.vehicle_type || "\u2014"}</td>
+                    <td style={{ padding: 4 }}>
+                      {r.hourly_rate ? `\u20b9${r.hourly_rate}` : "\u2014"}
+                    </td>
+                    <td style={{ padding: 4 }}>{r.distance_km} km</td>
+                    <td style={{ padding: 4 }}>
+                      {bookingStatus ? (
+                        <span
+                          style={{
+                            color:
+                              bookingStatus === "accepted"
+                                ? "#2e7d32"
+                                : bookingStatus === "rejected"
+                                  ? "#b00020"
+                                  : "#e0a020",
+                          }}
+                        >
+                          {bookingStatus}
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleRequest(r.resource_id)}
+                          disabled={requestingId === r.resource_id}
+                        >
+                          {requestingId === r.resource_id ? "..." : "Request"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <button onClick={handleSearch} disabled={searching} style={{ marginTop: 6, fontSize: 12 }}>
+            {searching ? "Searching..." : "Refresh"}
+          </button>
+        </>
       )}
     </div>
   );

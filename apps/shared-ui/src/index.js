@@ -2,6 +2,7 @@ export { decodeJwtPayload, login, registerAccount } from "./auth.js";
 export {
   PLATFORM_SPINE_URL,
   QUOTATION_URL,
+  RESOURCE_NETWORK_URL,
   PAYMENTS_URL,
   createJob,
   listMyJobs,
@@ -13,6 +14,14 @@ export {
   getLatestQuotationForJob,
   approveQuotation,
   rejectQuotation,
+  createResource,
+  listMyResources,
+  updateResource,
+  matchResources,
+  createBookingRequest,
+  listBookings,
+  acceptBooking,
+  rejectBooking,
   createPayment,
   getPayment,
 } from "./platform.js";

@@ -46,6 +46,8 @@ export const PLATFORM_SPINE_URL =
   import.meta.env.VITE_PLATFORM_SPINE_URL || "http://localhost:8001";
 export const QUOTATION_URL =
   import.meta.env.VITE_QUOTATION_URL || "http://localhost:8002";
+export const RESOURCE_NETWORK_URL =
+  import.meta.env.VITE_RESOURCE_NETWORK_URL || "http://localhost:8003";
 export const PAYMENTS_URL =
   import.meta.env.VITE_PAYMENTS_URL || "http://localhost:8004";
 
@@ -165,4 +167,80 @@ export async function createPayment(
 
 export async function getPayment(paymentsUrl, token, paymentId) {
   return request(paymentsUrl, `/v1/payments/${paymentId}`, { token });
+}
+
+// --- resource-network: resources (owned by resource_owner) ---
+
+export async function createResource(resourceNetworkUrl, token, resource) {
+  // resource: { resource_type, name, notes?, lat?, lng?, hourly_rate?, vehicle_type? }
+  return request(resourceNetworkUrl, "/v1/resources", {
+    method: "POST",
+    token,
+    body: resource,
+  });
+}
+
+export async function listMyResources(resourceNetworkUrl, token, statusFilter) {
+  const query = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : "";
+  return request(resourceNetworkUrl, `/v1/resources${query}`, { token });
+}
+
+export async function updateResource(resourceNetworkUrl, token, resourceId, updates) {
+  return request(resourceNetworkUrl, `/v1/resources/${resourceId}`, {
+    method: "PATCH",
+    token,
+    body: updates,
+  });
+}
+
+// --- resource-network: marketplace search (contractor only) ---
+
+export async function matchResources(
+  resourceNetworkUrl,
+  token,
+  { lat, lng, resourceType, maxResults }
+) {
+  return request(resourceNetworkUrl, "/v1/resources/match", {
+    method: "POST",
+    token,
+    body: {
+      lat,
+      lng,
+      resource_type: resourceType,
+      max_results: maxResults || 5,
+    },
+  });
+}
+
+// --- resource-network: booking requests ---
+
+export async function createBookingRequest(
+  resourceNetworkUrl,
+  token,
+  { resourceId, jobId, message }
+) {
+  return request(resourceNetworkUrl, "/v1/bookings", {
+    method: "POST",
+    token,
+    body: { resource_id: resourceId, job_id: jobId, message },
+  });
+}
+
+export async function listBookings(resourceNetworkUrl, token, statusFilter) {
+  const query = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : "";
+  return request(resourceNetworkUrl, `/v1/bookings${query}`, { token });
+}
+
+export async function acceptBooking(resourceNetworkUrl, token, bookingId) {
+  return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/accept`, {
+    method: "POST",
+    token,
+  });
+}
+
+export async function rejectBooking(resourceNetworkUrl, token, bookingId) {
+  return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/reject`, {
+    method: "POST",
+    token,
+  });
 }

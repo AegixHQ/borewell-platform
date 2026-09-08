@@ -71,7 +71,8 @@ export default function App() {
     // Client-side routing for UX/presentation ONLY - not the security
     // boundary. The real boundary is every backend service's require_role
     // dependency, proven by each service's isolation tests (see e.g.
-    // resource-network's test_resource_owner_cannot_create_resource_yet).
+    // resource-network's test_other_owner_cannot_view_or_edit_resource
+    // and test_contractor_cannot_create_resource - docs/adr/0004).
     const Dashboard = DASHBOARDS[session.role] || CustomerDashboard;
     return <Dashboard session={session} />;
   }
