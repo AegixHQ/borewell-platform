@@ -36,6 +36,15 @@ class Payment(Base):
     status = Column(
         SAEnum(*PAYMENT_STATUSES, name="payment_status"), nullable=False, default="pending"
     )
+    # Razorpay integration. Both nullable: a payment starts with neither
+    # set (created, no order yet), gets razorpay_order_id once
+    # create-order is called, and razorpay_payment_id once Razorpay's
+    # webhook reports an actual payment attempt against that order (a
+    # customer can create an order and abandon checkout without ever
+    # producing a razorpay_payment_id - that's a real, valid state, not
+    # a bug).
+    razorpay_order_id = Column(String, nullable=True, index=True)
+    razorpay_payment_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

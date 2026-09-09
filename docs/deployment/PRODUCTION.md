@@ -68,6 +68,42 @@ was built with the wrong backend URLs baked in (Vite bakes `VITE_*_URL` at
 rebuild the `web-app` image (`docker compose -f docker-compose.prod.yml
 --env-file .env.prod up -d --build web-app`), not just restart it.
 
+### Razorpay setup (one-time, in the Razorpay Dashboard)
+
+Do this **after** step 5 (the stack is up and `PUBLIC_URL` is actually
+reachable), not before - registering a webhook URL against an address
+that isn't serving traffic yet just means re-doing this step.
+
+1. `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`: Dashboard → Settings → API
+   Keys. Generate a **live** mode key pair for a real deployment, not a
+   test-mode one - the two look similar (`rzp_live_...` vs
+   `rzp_test_...`), so check the prefix before pasting into `.env.prod`.
+2. Bring the stack up (step 5) so `<PUBLIC_URL>:8004` is reachable.
+3. Dashboard → Settings → Webhooks → Add New Webhook. URL:
+   `http://<PUBLIC_URL>:8004/v1/payments/webhook` (or through a reverse
+   proxy once one exists - see step 7). Enable the `payment.captured` and
+   `payment.failed` events at minimum - other events are safely ignored
+   by the endpoint (see `services/payments-data/app/main.py`'s
+   `razorpay_webhook` handler), so enabling more than these two is
+   harmless, just unused.
+4. Razorpay shows the webhook secret **once**, at creation time - copy it
+   into `.env.prod`'s `RAZORPAY_WEBHOOK_SECRET` immediately. It cannot be
+   retrieved again later from their dashboard; losing it means deleting
+   and recreating the webhook.
+5. Restart `payments-data` to pick up the new env vars:
+   `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d payments-data`
+   (no `--build` needed - only the environment changed, not the image).
+6. Verify with a real test payment before considering this done - see
+   step 6 below.
+
+**Read before trusting any of the above against a real payment:** the
+integration (`services/payments-data/app/gateway/razorpay_client.py`)
+was built without live access to Razorpay's current documentation - it
+follows their long-stable Orders API and webhook signature scheme, but
+this should be checked against https://razorpay.com/docs/ once, by
+someone with real dashboard access, before this handles real customer
+money. See that file's own docstring for the same caveat in more detail.
+
 ## 5. Bring the stack up
 
 ```bash
@@ -107,11 +143,26 @@ curl http://<your-domain-or-ip>:8001/readyz
 Then do one real, manual walkthrough: register a customer, register a
 contractor, register a resource_owner, and run through create job ->
 list a resource -> nearby-search -> booking request -> accept ->
-generate quotation -> approve -> create payment. This is the same
-manual pass the Development Plan's Milestone 4 already calls for
-("catches UX friction automated tests don't detect") - a fresh
-deployment is exactly when it's worth re-running once, not just trusting
-the health checks.
+generate quotation -> approve -> create payment -> create-order ->
+**complete a real payment through Razorpay Checkout** -> confirm the
+webhook actually landed (payment status shows `completed`, not stuck at
+`pending`). This is the same manual pass the Development Plan's
+Milestone 4 already calls for ("catches UX friction automated tests
+don't detect") - a fresh deployment is exactly when it's worth
+re-running once, not just trusting the health checks. Use a small real
+amount for this first pilot check, or Razorpay's test mode
+(`rzp_test_...` keys) if you want to verify the deploy without moving
+real money yet - just remember to switch back to live keys in
+`.env.prod` before a real customer uses this.
+
+If the payment gets stuck at `pending` after a successful-looking
+Razorpay checkout, check `docker compose -f docker-compose.prod.yml
+--env-file .env.prod logs -f payments-data` for a webhook-related error
+first - the most common causes are `RAZORPAY_WEBHOOK_SECRET` not matching
+what's configured in the Razorpay dashboard (a stale/regenerated secret),
+or the webhook URL registered in the dashboard not actually being
+reachable from Razorpay's servers (check firewall/security group rules
+for port 8004, or whatever port a reverse proxy in front of it uses).
 
 ## 7. HTTPS (do this before real customer data touches this VM)
 
@@ -182,10 +233,18 @@ know if something is broken at pilot scale, per that same section.
 
 ## 11. What this runbook deliberately does not cover
 
-- **Payment gateway (Razorpay) integration** - not built yet
-  (`payments-data`'s `confirm`/`fail` endpoints are still admin-only
-  placeholders). `.env.prod.example` has reserved-but-commented lines for
-  when this lands.
+- **Razorpay account setup and business verification** - creating the
+  Razorpay account itself, KYC/business verification, and settlement
+  bank account configuration are Razorpay-side onboarding steps with
+  their own timeline (can take a few business days for a new business
+  account) - not something this runbook or the code can do for you.
+  Section 4's "Razorpay setup" subsection covers what happens once that
+  account exists and has live API access.
+- **Split payouts to resource owners** - the current integration handles
+  customer-to-platform payment only (`payments-data` collects payment
+  for a job; nothing routes any portion of it onward to a resource_owner
+  automatically). `docs/adr/0004`'s "Consequences" section flags this as
+  a real, undecided gap in the marketplace model, not an oversight here.
 - **Automated backups** for the 4 Postgres volumes - a real, separate
   operational decision (frequency, retention, off-VM storage) that
   deserves its own consideration once there's real pilot data worth

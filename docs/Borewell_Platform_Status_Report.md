@@ -4,6 +4,26 @@
 **Repository state:** 8 commits, `main` branch
 **Test baseline:** 89 passing tests across 4 services
 
+> **⚠️ STALE — this is a point-in-time snapshot, not a living document.**
+> Everything below reflects the repo as of Sep 3, 2026. Since then: the
+> resource-network model was rebuilt as a real multi-owner marketplace
+> with a booking request/accept/reject flow (`docs/adr/0004`), location-
+> aware pricing for pilot service areas landed, FR-TRACK-03/04 (actual
+> depth/cost + variance) was implemented, all 5 SRS section 11 acceptance
+> criteria gained real test coverage, a production deployment path was
+> built (`docker-compose.prod.yml`, `docs/deployment/PRODUCTION.md`), and
+> Razorpay is integrated (order creation + signed webhook - see
+> `services/payments-data/app/gateway/razorpay_client.py`). Test count as
+> of the Razorpay work: 166 passing across 4 services, not the 89 below.
+>
+> **For current state, read `README.md` and `docs/adr/` - not this
+> file.** This is kept as a historical record of one point in the
+> project's development, not updated to match reality after this point.
+> If you're an AI agent picking up work in this repo: treat every claim
+> below as "true as of Sep 3," verify against the actual current code
+> before relying on it, and never cite the numbers in this document
+> (commit counts, test counts, "not yet built" claims) as current fact.
+
 ---
 
 ## Part 1 — What Has Been Built

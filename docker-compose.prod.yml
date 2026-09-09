@@ -34,6 +34,15 @@
 #     crash without a human re-running `docker compose up`.
 #   - No bind-mounted source anywhere - production runs the image that
 #     was built, not a live view of the host filesystem.
+#   - payments-data gets 3 additional RAZORPAY_* env vars that don't
+#     exist in dev compose at all (not a difference in value - dev
+#     compose has no equivalent line). Local development against
+#     payments-data's create-order/webhook endpoints uses mocked Razorpay
+#     calls in tests (see services/payments-data/tests/test_razorpay_*.py)
+#     rather than needing real credentials for `make up` - see
+#     services/payments-data/app/gateway/razorpay_client.py's docstring
+#     for the full integration and its honest caveat about not having
+#     been checked against live Razorpay docs.
 
 services:
   postgres-platform-spine:
@@ -170,6 +179,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       QUOTATION_SERVICE_URL: http://quotation:8000
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
     ports:
       - "8004:8000"
 

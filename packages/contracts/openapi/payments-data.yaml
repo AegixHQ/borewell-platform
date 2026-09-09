@@ -67,7 +67,15 @@ paths:
           description: Payment not found
   /v1/payments/{payment_id}/confirm:
     post:
-      summary: "Placeholder for the real payment gateway webhook - admin-gated only until a real gateway is integrated (RFC 0001 section 7 open decision)"
+      summary: |
+        Manual admin override to mark a payment completed. The real,
+        primary confirmation path is POST /v1/payments/webhook (Razorpay's
+        signed webhook) - this endpoint is now the FALLBACK for support/
+        pilot cases where the webhook didn't fire or a manual correction
+        is genuinely needed (e.g. a customer paid via a channel outside
+        the app, verified out of band). Still admin-only; never wire a
+        frontend "confirm" button to this - real confirmation flows
+        through the webhook.
       parameters:
         - name: payment_id
           in: path
@@ -86,7 +94,10 @@ paths:
           description: Payment not found
   /v1/payments/{payment_id}/fail:
     post:
-      summary: "Placeholder for the real payment gateway webhook failure callback - admin-gated only until a real gateway is integrated"
+      summary: |
+        Manual admin override to mark a payment failed. Same fallback
+        role as /confirm above - the real path is the webhook reporting
+        payment.failed.
       parameters:
         - name: payment_id
           in: path
@@ -103,6 +114,73 @@ paths:
           description: Only admin may mark failed (placeholder auth, see summary)
         '404':
           description: Payment not found
+  /v1/payments/{payment_id}/create-order:
+    post:
+      summary: |
+        Create a Razorpay Order for this payment and return the order_id
+        the frontend needs to open Razorpay Checkout. Customer only, and
+        only the payment's own customer. Payment must be 'pending' (a
+        completed or failed payment cannot get a new order). Idempotent
+        in practice: if an order already exists for this payment, returns
+        the existing order_id rather than creating a second one at
+        Razorpay (a customer re-opening the payment screen must not spawn
+        duplicate Razorpay orders for the same payment).
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Razorpay order ready for checkout
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  razorpay_order_id: { type: string }
+                  razorpay_key_id: { type: string, description: "Public key ID - safe to expose to the frontend, needed to open Razorpay Checkout" }
+                  amount_paise: { type: integer, description: "Amount in paise (INR minor unit) - what Razorpay Checkout expects" }
+                  currency: { type: string, example: "INR" }
+        '400':
+          description: Payment is not in 'pending' status
+        '403':
+          description: Not the owning customer
+        '404':
+          description: Payment not found
+        '502':
+          description: Razorpay order-creation call failed
+
+  /v1/payments/webhook:
+    post:
+      summary: |
+        Razorpay webhook receiver - the real, primary payment-confirmation
+        path (replaces the admin-gated /confirm and /fail placeholders as
+        the source of truth). Authenticates via HMAC-SHA256 signature in
+        the X-Razorpay-Signature header (RAZORPAY_WEBHOOK_SECRET), NOT an
+        app-issued JWT - Razorpay's server calls this directly, it has no
+        Borewell Platform login. Handles payment.captured (-> completed)
+        and payment.failed (-> failed) events; any other event type is
+        acknowledged with 200 and ignored, not rejected, since Razorpay
+        retries on non-2xx and this endpoint should never cause a retry
+        storm over an event type it simply doesn't act on yet.
+      parameters:
+        - name: X-Razorpay-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        description: Razorpay's webhook payload - see their docs for the full event schema; only payment.captured/payment.failed are acted on
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Event processed (or acknowledged and ignored, if not a handled event type)
+        '400':
+          description: Signature missing or invalid - request rejected before any processing
+
   /v1/analytics/estimate-accuracy:
     get:
       summary: "NOT IMPLEMENTED YET - quoted-vs-actual variance reporting, US-11 (Should priority, not Must). Declared here so the contract documents the intended future shape."
@@ -123,4 +201,6 @@ components:
         quotation_id: { type: string, format: uuid }
         amount: { type: string, format: decimal, example: "95450.00" }
         status: { type: string, enum: [pending, completed, failed] }
+        razorpay_order_id: { type: string, nullable: true, description: "Set once POST /v1/payments/{id}/create-order has been called" }
+        razorpay_payment_id: { type: string, nullable: true, description: "Set once the webhook reports a captured/failed payment attempt" }
         created_at: { type: string, format: date-time }

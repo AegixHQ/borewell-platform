@@ -12,6 +12,14 @@ from sqlalchemy.orm import Session
 from app import events, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
+from app.gateway.razorpay_client import (
+    RazorpayApiError,
+    RazorpayNotConfigured,
+    WebhookSignatureInvalid,
+    create_order,
+    get_razorpay_config,
+    verify_webhook_signature,
+)
 from app.payments.quotation_client import (
     QuotationAccessDenied,
     QuotationNotFound,
@@ -96,6 +104,8 @@ def _payment_to_response(p: models.Payment) -> schemas.PaymentResponse:
         quotation_id=p.quotation_id,
         amount=p.amount,
         status=p.status,
+        razorpay_order_id=p.razorpay_order_id,
+        razorpay_payment_id=p.razorpay_payment_id,
         created_at=p.created_at,
     )
 
@@ -236,18 +246,93 @@ def list_payments(db: Session = Depends(get_db), claims: dict = Depends(get_curr
     return [_payment_to_response(p) for p in query.order_by(models.Payment.created_at.desc()).all()]
 
 
+@app.post("/v1/payments/{payment_id}/create-order", response_model=schemas.CreateOrderResponse)
+def create_order_for_payment(
+    payment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer")),
+):
+    """Creates the Razorpay Order the frontend needs to open Checkout. See
+    app/gateway/razorpay_client.py for the real integration logic and its
+    HONEST CAVEAT about not having been checked against live Razorpay docs.
+    """
+    payment = db.query(models.Payment).filter(models.Payment.id == str(payment_id)).first()
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "PAYMENT_NOT_FOUND", "message": "No payment with this ID exists."},
+        )
+    if payment.customer_id != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "You can only pay for your own payments."},
+        )
+    if payment.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "PAYMENT_NOT_PENDING",
+                "message": (
+                    f"Payment status is '{payment.status}', not 'pending' - "
+                    "cannot create a new order."
+                ),
+            },
+        )
+
+    # Idempotent: a customer re-opening the payment screen (e.g. after
+    # closing Checkout without completing it) must not spawn a second
+    # Razorpay order for the same payment - reuse the existing one.
+    if payment.razorpay_order_id:
+        try:
+            cfg = get_razorpay_config()
+        except RazorpayNotConfigured as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "GATEWAY_NOT_CONFIGURED", "message": str(exc)},
+            )
+        return schemas.CreateOrderResponse(
+            razorpay_order_id=payment.razorpay_order_id,
+            razorpay_key_id=cfg.key_id,
+            amount_paise=int(payment.amount * 100),
+            currency="INR",
+        )
+
+    try:
+        order = create_order(str(payment.id), payment.amount)
+        cfg = get_razorpay_config()
+    except RazorpayNotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "GATEWAY_NOT_CONFIGURED", "message": str(exc)},
+        )
+    except RazorpayApiError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "GATEWAY_ERROR", "message": f"Could not create Razorpay order: {exc}"},
+        )
+
+    payment.razorpay_order_id = order["id"]
+    db.commit()
+
+    return schemas.CreateOrderResponse(
+        razorpay_order_id=order["id"],
+        razorpay_key_id=cfg.key_id,
+        amount_paise=order["amount"],
+        currency=order.get("currency", "INR"),
+    )
+
+
 @app.post("/v1/payments/{payment_id}/confirm", response_model=schemas.PaymentResponse)
 def confirm_payment(
     payment_id: uuid.UUID,
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("admin")),
 ):
-    """Placeholder for the real payment gateway's webhook (RFC 0001 section 7
-    open decision: Razorpay has a first-party WhatsApp/India integration).
-    Gated behind admin role only because no real gateway is wired up yet -
-    the eventual webhook will authenticate via gateway signature
-    verification, not an app-issued JWT role check. Replace this, don't
-    build on top of it, once a real gateway is integrated."""
+    """Manual admin override. The real, primary confirmation path is now
+    POST /v1/payments/webhook (Razorpay's signed webhook) - this endpoint
+    is the FALLBACK for support/pilot cases where the webhook didn't fire
+    or a manual correction is genuinely needed. Never wire a frontend
+    "confirm" button to this."""
     payment = db.query(models.Payment).filter(models.Payment.id == str(payment_id)).first()
     if not payment:
         raise HTTPException(
@@ -276,7 +361,7 @@ def fail_payment(
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("admin")),
 ):
-    """Same placeholder caveat as confirm_payment above."""
+    """Manual admin override - same fallback role as confirm_payment above."""
     payment = db.query(models.Payment).filter(models.Payment.id == str(payment_id)).first()
     if not payment:
         raise HTTPException(
@@ -287,3 +372,122 @@ def fail_payment(
     db.commit()
     db.refresh(payment)
     return _payment_to_response(payment)
+
+
+@app.post("/v1/payments/webhook")
+async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
+    """Real, primary payment-confirmation path - see app/gateway/
+    razorpay_client.py for the signature-verification logic and its
+    HONEST CAVEAT (built without live access to current Razorpay docs;
+    verify the payload shape below against https://razorpay.com/docs/webhooks/
+    before this goes live, not just this comment).
+
+    Authenticates via X-Razorpay-Signature (HMAC-SHA256, RAZORPAY_WEBHOOK_SECRET),
+    NOT an app JWT - Razorpay's server calls this directly and has no
+    Borewell Platform login. The raw request body (not the parsed/
+    re-serialized JSON) is what gets signature-checked - see
+    verify_webhook_signature's docstring for why that distinction matters.
+
+    Idempotent by design: Razorpay documents at-least-once webhook
+    delivery, so the same event can arrive more than once. Re-processing
+    an event for a payment that's already in its target status is a
+    no-op, not an error and not a second events.payment_completed fire -
+    see the "already in target status" checks below.
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature")
+
+    try:
+        verify_webhook_signature(raw_body, signature)
+    except RazorpayNotConfigured as exc:
+        # Fails closed: an unconfigured webhook secret must reject every
+        # request, not accept them unverified. A 502 here (not 200) is
+        # deliberate - Razorpay will retry, which is the correct behavior
+        # until an operator actually sets RAZORPAY_WEBHOOK_SECRET.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "GATEWAY_NOT_CONFIGURED", "message": str(exc)},
+        )
+    except WebhookSignatureInvalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "INVALID_SIGNATURE",
+                "message": "Webhook signature verification failed.",
+            },
+        )
+
+    payload = await request.json()
+    event = payload.get("event")
+
+    # Unhandled event type: acknowledge with 200 rather than reject, so
+    # Razorpay doesn't retry an event this endpoint has no reaction to -
+    # see this endpoint's OpenAPI summary for the same reasoning.
+    if event not in ("payment.captured", "payment.failed"):
+        return {"status": "ignored", "event": event}
+
+    try:
+        payment_entity = payload["payload"]["payment"]["entity"]
+        razorpay_order_id = payment_entity["order_id"]
+        razorpay_payment_id = payment_entity["id"]
+    except (KeyError, TypeError):
+        # Signature was valid (so this really is Razorpay), but the
+        # payload didn't have the shape we expect - this is a genuine
+        # "check this against current Razorpay docs" signal, not
+        # something to silently swallow. 400 so it's visible in
+        # monitoring, not retried forever as a 5xx would cause.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "UNEXPECTED_PAYLOAD_SHAPE",
+                "message": (
+                    "Webhook signature was valid but payload.payment.entity "
+                    "was missing expected fields - check this against current "
+                    "Razorpay webhook docs, the shape assumed here may be stale."
+                ),
+            },
+        )
+
+    payment = (
+        db.query(models.Payment)
+        .filter(models.Payment.razorpay_order_id == razorpay_order_id)
+        .first()
+    )
+    if not payment:
+        # A webhook for an order_id we have no record of - could be a
+        # stale/replayed test event, or a real integration bug. Either
+        # way there's no local payment row to update. 200, not 404/500:
+        # Razorpay isn't at fault for our lookup miss, and we don't want
+        # infinite retries for an event that will never resolve.
+        return {"status": "no_matching_payment", "razorpay_order_id": razorpay_order_id}
+
+    if event == "payment.captured":
+        if payment.status == "completed":
+            # Idempotent no-op - see this function's docstring. Still 200.
+            return {"status": "already_completed", "payment_id": payment.id}
+        payment.razorpay_payment_id = razorpay_payment_id
+        payment.status = "completed"
+        db.commit()
+        db.refresh(payment)
+        events.payment_completed(
+            payment_id=payment.id,
+            job_id=payment.job_id,
+            amount=payment.amount,
+            completed_at=payment.updated_at,
+        )
+        return {"status": "completed", "payment_id": payment.id}
+
+    if event == "payment.failed":
+        if payment.status == "failed":
+            return {"status": "already_failed", "payment_id": payment.id}
+        # A payment already 'completed' must never be overwritten to
+        # 'failed' by a late/out-of-order webhook delivery - completed is
+        # a terminal state here, same reasoning as job_completion's
+        # write-once rule elsewhere in this platform.
+        if payment.status == "completed":
+            return {"status": "ignored_already_completed", "payment_id": payment.id}
+        payment.razorpay_payment_id = razorpay_payment_id
+        payment.status = "failed"
+        db.commit()
+        db.refresh(payment)
+        return {"status": "failed", "payment_id": payment.id}

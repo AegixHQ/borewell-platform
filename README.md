@@ -36,7 +36,7 @@ Architecture docs, for the current state of the product.** In particular:
 | platform-spine | Dev A | 8001 | Identity/RBAC (customer/contractor/resource_owner/admin), Job Orchestration state machine, job completion + variance tracking |
 | quotation | Dev B | 8002 | Configurable pricing engine, location-aware depth estimation (pilot service areas), quotations |
 | resource-network | Dev C | 8003 | Multi-owner resource inventory, cross-owner nearest-resource search, booking request flow (request/accept/reject), pilot service-area reference data |
-| payments-data | Dev D | 8004 | DB-enforced idempotent payments, sync cross-service validation (payment gateway integration not yet built - see `docs/deployment/PRODUCTION.md` section 11) |
+| payments-data | Dev D | 8004 | DB-enforced idempotent payments, sync cross-service validation, real Razorpay integration (order creation + signed webhook confirmation - needs live API keys, see `docs/deployment/PRODUCTION.md` section 4) |
 | web-app | - | 5173 (dev) / 80 (prod) | Single React/Vite frontend for all 4 roles - customer, contractor, resource_owner, admin (see `docs/adr/0002`) |
 
 `apps/shared-ui` is a shared npm workspace package (not a standalone
@@ -105,8 +105,13 @@ dependency - see each service's isolation tests, e.g.
    contractor's flat configured assumption.
 6. **customer** reviews the quotation (depth range + confidence badge are
    always shown, per UI/UX doc section 7) and approves it.
-7. **customer** pays (payment gateway integration not yet built - see
-   `docs/deployment/PRODUCTION.md` section 11).
+7. **customer** pays through Razorpay Checkout - `payments-data` creates a
+   Razorpay order, the frontend opens Checkout, and Razorpay's signed
+   webhook confirms the payment on completion (needs live API keys in
+   production; see `docs/deployment/PRODUCTION.md` section 4 for setup,
+   and `services/payments-data/app/gateway/razorpay_client.py` for the
+   integration itself and its honest caveat about not being checked
+   against live Razorpay docs).
 8. **contractor** advances the job through its lifecycle and logs actual
    depth/cost at completion; quoted-vs-actual variance is computed and
    stored automatically.
