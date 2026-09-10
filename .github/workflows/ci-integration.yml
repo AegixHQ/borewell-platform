@@ -1,0 +1,68 @@
+name: CI - integration (real cross-service flow)
+
+# Development Plan section 2 (Milestone 2) and section 5 (Testing
+# Strategy): "End-to-end flow (lead -> quote -> approve -> pay -> track
+# -> complete) runs against real services, not mocks" / "the Milestone 2
+# end-to-end flow, run via Docker Compose in CI, not just locally." No
+# other workflow in this repo satisfies this - every per-service
+# ci-*.yml runs that service's own pytest suite, which by design mocks
+# every cross-service call (see each service's tests/conftest.py:
+# fake_job_fetcher, fake_quotation_fetcher, fake_location_fetcher, etc.).
+# This is the one workflow that boots all 4 services for real via
+# `docker compose up` and proves they work together over real HTTP - see
+# tools/integration-test/run_integration_test.py for the actual script
+# and its own header comment for the full scope/honesty notes (including
+# what this does NOT cover - Redis event consumption, since nothing in
+# this codebase consumes events yet).
+#
+# Runs on every push/PR regardless of which files changed (no path
+# filter) - unlike the per-service workflows, this is the one check
+# meant to catch a regression from a change that spans multiple
+# services (e.g. an inter-service contract drift that each service's
+# own mocked tests wouldn't catch on their own).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install integration test dependencies
+        run: pip install --quiet requests
+
+      - name: Start the full stack
+        # --build ensures this always tests the actual current code, not
+        # a stale cached image from a prior run. Same command a developer
+        # runs locally (`make up`) - see README.md's Quick Start - so a
+        # failure here is reproducible locally with the exact same command.
+        run: docker compose up --build -d
+
+      - name: Wait for services and run the real integration test
+        # The script's own wait_for_ready() polls each service's /readyz
+        # (real DB connectivity check, not just process liveness) before
+        # proceeding - see that function's docstring for why a plain
+        # "sleep N" or healthcheck-only wait isn't enough (migrations run
+        # as part of each container's startup command, before uvicorn
+        # even starts listening - see each services/*/Dockerfile).
+        run: python3 tools/integration-test/run_integration_test.py
+
+      - name: Show service logs
+        # Always, even on success - useful for spotting warnings that
+        # didn't fail the run but are worth seeing.
+        if: always()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

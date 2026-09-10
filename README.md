@@ -144,6 +144,37 @@ make prod-down        # stop the production stack
 make prod-logs        # follow production logs
 ```
 
+## Continuous Integration
+
+Every workflow lives in `.github/workflows/`, runs automatically on push/PR,
+and is reproducible locally with the exact command it runs (no CI-only
+magic):
+
+| Workflow | What it checks | Path-scoped? |
+|---|---|---|
+| `ci-platform-spine.yml`, `ci-quotation.yml`, `ci-resource-network.yml`, `ci-payments-data.yml` | That service's own `pytest` suite, `ruff check`, and `check_contract.py` - matches `make test`/`make lint`/`make check-contracts` for that one service | Yes - only runs when that service (or the contract it implements) changes |
+| `ci-frontend.yml` | `npm install` (from repo root - `web-app` depends on `shared-ui` via an npm workspace, not a published package) + `npm run build --workspace=web-app` | Yes - `apps/**` |
+| `ci-deployment.yml` | Both compose files parse (`docker compose config`), and every Dockerfile in the repo (4 backend + frontend prod + frontend dev) actually builds | Yes - compose/Dockerfile changes |
+| `ci-integration.yml` | **The one workflow that boots all 4 real services via `docker compose up` and runs a real cross-service flow over real HTTP** - registration/login, job creation, cross-owner marketplace search, booking request/accept, location-aware quotation generation, approval, payment creation, full job-status lifecycle, completion + variance. See `tools/integration-test/run_integration_test.py` for the script and its own header comment for exactly what it does and does not prove. | No - runs on every push/PR regardless of which files changed, since a multi-service regression is exactly what path-scoped checks can miss |
+
+**Why a separate integration workflow, when 4 services already have their
+own CI:** every per-service test suite mocks every cross-service call by
+design (see e.g. `fake_job_fetcher` in `services/quotation/tests/conftest.py`)
+- that's correct for testing one service in isolation, but it means no
+existing workflow ever proved the services actually work *together*. This
+was a real, explicit requirement in `Borewell_05_Development_Plan.md`
+("the Milestone 2 end-to-end flow, run via Docker Compose in CI, not just
+locally") that nothing satisfied until `ci-integration.yml` - not a
+speculative addition.
+
+**What CI does *not* cover, stated plainly rather than implied:** Redis
+event consumption. Every service publishes events (`job.created`,
+`job.quoted`, `job.completed`, `payment.completed` - see each service's
+`app/events.py`), but nothing in this codebase subscribes to or acts on
+them yet (`grep -rn "subscribe" services/*/app/` returns nothing). No
+workflow tests this because there's nothing on the consuming side to
+test - a green CI run is not a claim that event-driven behavior works.
+
 ## Before you touch the top-level structure
 
 Read `STRUCTURE.md` first. New services/apps are added by following the existing template folders, not by renaming or restructuring what's already here.

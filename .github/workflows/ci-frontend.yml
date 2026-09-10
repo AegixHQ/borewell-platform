@@ -4,24 +4,50 @@ on:
   push:
     paths:
       - 'apps/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ci-frontend.yml'
   pull_request:
     paths:
       - 'apps/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ci-frontend.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        app: [web-app, shared-ui]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install
-        working-directory: apps/${{ matrix.app }}
+
+      # MUST run from the repo root, not a per-app subdirectory - web-app
+      # depends on shared-ui via an npm workspace (see root package.json's
+      # "workspaces" field: ["apps/*"]), and `npm install` only resolves
+      # that as a local symlink when run from where the workspace is
+      # declared. Running `npm install` inside apps/web-app alone (the
+      # prior version of this workflow) does NOT fail loudly - it
+      # silently pulls an unrelated third-party package that also happens
+      # to be published to the public npm registry under the name
+      # "shared-ui", and builds against THAT instead. Confirmed by
+      # actually reproducing it: `cd apps/web-app && npm install` pulls
+      # shared-ui@0.0.8 from registry.npmjs.org, a completely unrelated
+      # package with different exports - not this project's code at all.
+      - name: Install (workspace-aware, from repo root)
         run: npm install
-      - name: Build
-        working-directory: apps/${{ matrix.app }}
-        run: npm run build --if-present
+
+      - name: Build web-app
+        run: npm run build --workspace=web-app
+
+      # shared-ui has no build/test/lint script (it's a plain JS source
+      # package consumed directly by web-app's bundler, not compiled on
+      # its own) - `npm run build --workspace=shared-ui` would be a
+      # silent no-op that looks like coverage but verifies nothing. The
+      # real verification that shared-ui's code is correct is web-app's
+      # build succeeding against it (that build fails on a shared-ui
+      # syntax error or a broken export - already covered above) and
+      # tools/integration-test/run_integration_test.py (ci-integration.yml)
+      # exercising the actual API client functions shared-ui exports
+      # against real running services.

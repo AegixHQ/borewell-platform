@@ -76,6 +76,7 @@ services:
       JWT_SECRET: dev-only-secret-change-in-production
       ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
       RESOURCE_NETWORK_URL: http://resource-network:8000
+      PLATFORM_SPINE_URL: http://platform-spine:8000
     ports:
       - "8002:8000"
 
