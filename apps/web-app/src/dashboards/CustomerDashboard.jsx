@@ -255,7 +255,7 @@ function LocationEntryScreen({ lat, lng, jobType, setLat, setLng, setJobType, on
     <form onSubmit={onSubmit}>
       <h2>Request a Borewell</h2>
       <p style={{ color: "#555", fontSize: 14 }}>
-        Enter your site's coordinates and job type to get an estimate.
+        Enter your site&apos;s coordinates and job type to get an estimate.
       </p>
       <label style={{ display: "block", marginBottom: 8 }}>
         Latitude
@@ -368,7 +368,7 @@ function QuotationDisplayScreen({ quotation, onApprove, onRequestChanges, busy }
       </table>
       {quotation.minimum_charge_applied && (
         <p style={{ fontSize: 12, color: "#555" }}>
-          Your contractor's minimum job charge has been applied to this total.
+          Your contractor&apos;s minimum job charge has been applied to this total.
         </p>
       )}
 
@@ -395,7 +395,7 @@ function PaymentScreen({ quotation, onPay, busy }) {
         A real payment gateway is not wired up yet (RFC 0001 section 7 open
         decision - Razorpay is the current front-runner for India). Confirming
         this payment right now creates a real, correctly-priced payment
-        record that stays "pending" until that gateway integration lands and
+        record that stays &quot;pending&quot; until that gateway integration lands and
         actually confirms it - it will not silently show as paid.
       </p>
       <button onClick={onPay} disabled={busy}>

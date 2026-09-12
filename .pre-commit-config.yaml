@@ -12,3 +12,16 @@ repos:
         entry: bash -c 'PYTHON=python; if [ -d .venv ]; then PYTHON=.venv/bin/python; fi; for svc in platform-spine quotation resource-network payments-data; do $PYTHON tools/contract-check/check_contract.py "$svc" || exit 1; done'
         language: system
         pass_filenames: false
+
+      - id: frontend-lint
+        name: frontend lint (web-app + shared-ui)
+        # Requires `npm install` to have been run at repo root at least
+        # once (see README.md's Quick Start) - this hook doesn't install
+        # dependencies itself, same as ruff above assumes the Python venv
+        # already exists. Only runs when a file under apps/ is part of
+        # the commit - files: scopes this so a backend-only commit
+        # doesn't need Node installed at all to commit.
+        entry: npm run lint --silent
+        language: system
+        files: ^apps/
+        pass_filenames: false

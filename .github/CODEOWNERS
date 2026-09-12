@@ -7,5 +7,19 @@
 /services/resource-network/ @Shrey-Arc  # Dev C - TODO: replace
 /services/payments-data/   @Shrey-Arc   # Dev D - TODO: replace
 
+# apps/ (web-app + shared-ui) has no per-service owner split the way
+# services/ does - both are one frontend intern's area for now. Split
+# further only if/when a second frontend person joins.
+/apps/                @Shrey-Arc   # TODO: replace with frontend intern's handle once they're added as a collaborator
+
 /packages/contracts/ @Shrey-Arc   # contract changes need cross-team visibility
 /tools/               @Shrey-Arc   # provisional per ADR-0001, until ratified
+
+# CI, deployment config, and root-level project files always need your
+# own review regardless of who else is added above - these are the
+# files where a mistake is hardest to catch from the diff alone (a wrong
+# secret reference, a broken workflow trigger) and cheapest to make.
+/.github/             @Shrey-Arc
+/docker-compose*.yml  @Shrey-Arc
+/docs/deployment/     @Shrey-Arc
+/docs/adr/            @Shrey-Arc

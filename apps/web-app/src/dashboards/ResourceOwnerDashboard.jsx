@@ -61,6 +61,7 @@ function FleetScreen({ session, setError }) {
 
   useEffect(() => {
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refresh() {
@@ -131,7 +132,7 @@ function FleetScreen({ session, setError }) {
       ) : resources.length === 0 && !showForm ? (
         // UI/UX doc section 7 pattern: friendly empty state, not a blank list.
         <p>
-          You haven't listed any rigs or equipment yet. Add one to start
+          You haven&apos;t listed any rigs or equipment yet. Add one to start
           receiving booking requests from contractors.
         </p>
       ) : (
@@ -242,7 +243,7 @@ function FleetScreen({ session, setError }) {
           </label>
           <p style={{ fontSize: 12, color: "#777" }}>
             Set your base location to appear in nearby searches - a resource
-            without a location won't be found by contractors.
+            without a location won&apos;t be found by contractors.
           </p>
           <button type="submit" disabled={busy}>
             {busy ? "Adding..." : "Add to Fleet"}
@@ -263,6 +264,7 @@ function RequestsScreen({ session, setError }) {
 
   useEffect(() => {
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refresh() {
@@ -314,7 +316,7 @@ function RequestsScreen({ session, setError }) {
       {loading ? (
         <p>Loading requests...</p>
       ) : bookings.length === 0 ? (
-        <p>No booking requests yet. They'll appear here when a contractor requests one of your resources.</p>
+        <p>No booking requests yet. They&apos;ll appear here when a contractor requests one of your resources.</p>
       ) : (
         <>
           {pending.length > 0 && (
@@ -327,7 +329,7 @@ function RequestsScreen({ session, setError }) {
                 >
                   <p style={{ margin: 0, fontSize: 13 }}>
                     Resource <code>{b.resource_id.slice(0, 8)}</code>
-                    {b.message && <> \u2014 "{b.message}"</>}
+                    {b.message && <> &mdash; &quot;{b.message}&quot;</>}
                   </p>
                   <div style={{ marginTop: 6 }}>
                     <button onClick={() => handleAccept(b.booking_id)} disabled={busyId === b.booking_id}>

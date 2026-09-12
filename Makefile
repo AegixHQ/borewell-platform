@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint check-contracts migrate prod-up prod-down prod-logs
+.PHONY: up down logs test lint lint-frontend lint-all check-contracts migrate prod-up prod-down prod-logs
 
 up:
 	docker compose up --build -d
@@ -17,6 +17,11 @@ test:
 
 lint:
 	ruff check services/
+
+lint-frontend:
+	npm run lint
+
+lint-all: lint lint-frontend
 
 check-contracts:
 	@for svc in platform-spine quotation resource-network payments-data; do \

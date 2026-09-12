@@ -38,16 +38,21 @@ jobs:
       - name: Install (workspace-aware, from repo root)
         run: npm install
 
+      - name: Lint (covers both web-app and shared-ui)
+        # eslint.config.js's glob (apps/**/*.{js,jsx}) covers shared-ui
+        # too, in the same run - there's no separate shared-ui lint step
+        # because there's no separate config, just the one root config.
+        run: npm run lint
+
       - name: Build web-app
         run: npm run build --workspace=web-app
 
-      # shared-ui has no build/test/lint script (it's a plain JS source
-      # package consumed directly by web-app's bundler, not compiled on
-      # its own) - `npm run build --workspace=shared-ui` would be a
-      # silent no-op that looks like coverage but verifies nothing. The
-      # real verification that shared-ui's code is correct is web-app's
-      # build succeeding against it (that build fails on a shared-ui
-      # syntax error or a broken export - already covered above) and
+      # shared-ui still has no build/test script of its own (it's a
+      # plain JS source package consumed directly by web-app's bundler,
+      # not compiled independently) - `npm run build --workspace=shared-ui`
+      # would be a silent no-op. What DOES verify shared-ui's correctness:
+      # the lint step above (syntax, unused vars, hooks rules), web-app's
+      # build succeeding against it (fails on a broken export), and
       # tools/integration-test/run_integration_test.py (ci-integration.yml)
       # exercising the actual API client functions shared-ui exports
       # against real running services.

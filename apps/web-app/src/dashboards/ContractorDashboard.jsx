@@ -49,6 +49,7 @@ export default function ContractorDashboard({ session }) {
 
   useEffect(() => {
     refreshJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refreshJobs() {
@@ -117,6 +118,7 @@ function PricingRulesScreen({ session }) {
 
   useEffect(() => {
     refreshRules();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refreshRules() {
@@ -159,6 +161,11 @@ function PricingRulesScreen({ session }) {
   return (
     <div>
       <h2>Pricing Rules</h2>
+      {error && (
+        <p role="alert" style={{ color: "#b00020", border: "1px solid #b00020", padding: 8 }}>
+          {error}
+        </p>
+      )}
       <p style={{ fontSize: 13, color: "#555" }}>
         Configured for:{" "}
         {JOB_TYPES.map((t) => (
