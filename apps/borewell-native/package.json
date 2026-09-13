@@ -1,0 +1,26 @@
+{
+  "name": "borewell-native",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@react-native-picker/picker": "^2.11.4",
+    "expo": "~57.0.22",
+    "expo-secure-store": "^57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "eslint .",
+    "bundle-check": "expo export:embed --platform ios --entry-file App.js --bundle-output /tmp/borewell-native-ci-bundle.js --dev false"
+  },
+  "private": true,
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "^57.0.2"
+  }
+}

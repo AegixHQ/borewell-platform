@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "apps/*"
+    "apps/web-app",
+    "apps/shared-ui"
   ],
   "scripts": {
     "lint": "eslint apps/"

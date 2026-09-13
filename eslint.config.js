@@ -31,12 +31,21 @@ export default [
     // (.github/workflows/ci-frontend.yml only touches web-app/shared-ui) -
     // excluded here too for the same reason: linting code explicitly
     // marked "don't build here" produces noise, not signal.
+    //
+    // apps/borewell-native is excluded for a different reason: it's a
+    // real, actively-developed React Native/Expo app, not deprecated -
+    // but it uses react-native globals (not browser window/document) and
+    // Expo ships its own ESLint config (eslint-config-expo) tuned for
+    // Metro's bundler quirks. Forcing this repo's browser-oriented config
+    // onto it would be actively wrong, not just unnecessary - see that
+    // app's own eslint.config.js.
     ignores: [
       "**/dist/**",
       "**/node_modules/**",
       "apps/contractor-app/**",
       "apps/customer-app/**",
       "apps/resource-owner-app/**",
+      "apps/borewell-native/**",
     ],
   },
   {

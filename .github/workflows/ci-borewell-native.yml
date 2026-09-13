@@ -1,0 +1,44 @@
+name: CI - borewell-native
+
+# apps/borewell-native manages its own dependencies independently from
+# the root npm workspace (see that app's AGENTS.md for why - Metro's
+# known issues with hoisted workspace node_modules) - so this workflow
+# installs and runs entirely within that directory, unlike ci-frontend.yml
+# which needs the repo root for web-app/shared-ui's workspace link.
+#
+# No real device/simulator available in CI (or in the environment that
+# built this initial scaffold) - "bundle-check" (Metro successfully
+# resolving and bundling every import for a real iOS target) is the
+# strongest automated check available without one. It is NOT a
+# substitute for actually running the app - see this app's AGENTS.md.
+
+on:
+  push:
+    paths:
+      - 'apps/borewell-native/**'
+      - '.github/workflows/ci-borewell-native.yml'
+  pull_request:
+    paths:
+      - 'apps/borewell-native/**'
+      - '.github/workflows/ci-borewell-native.yml'
+
+jobs:
+  lint-and-bundle:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/borewell-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install
+        run: npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Bundle check (Metro resolves + bundles every import, iOS target)
+        run: npm run bundle-check
