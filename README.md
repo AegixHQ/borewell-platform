@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/wordmark.svg" alt="PROJECT METAL" width="420" />
+
 # 🛠️ Borewell Platform
 
 **A location-aware marketplace connecting borewell customers, contractors, and independent resource owners in Tamil Nadu.**
@@ -131,6 +133,26 @@ Register as any of the four roles from the registration screen. Each role routes
 | 6️⃣ | 👤 **Customer** | Reviews the quote (depth range + confidence badge are *always* shown, per `UI/UX §7`) and approves it |
 | 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** — `payments-data` creates the order, the signed webhook confirms it (needs live keys in production — see `PRODUCTION.md §4`) |
 | 8️⃣ | 👷 **Contractor** | Advances the job through its lifecycle, logs actual depth/cost at completion — variance is computed automatically |
+
+---
+
+## 📸 Screenshots & Demo
+
+> **No real screenshots or demo video exist yet.** `web-app`'s dashboards are wired to the real backend but not visually designed (see `apps/AGENTS.md`), and `apps/borewell-native` has a working login screen with placeholder dashboards beyond that (see that app's own `AGENTS.md` for the exact build order). Nothing here is polished enough yet to be worth screenshotting — this section is a placeholder with a real checklist, not filled with anything fabricated to look finished before it is.
+
+**To add real media once there's something worth showing:**
+
+1. Drop image files into `docs/assets/screenshots/` (create the folder) and video files or links into `docs/assets/demo/`.
+2. Reference them here with standard markdown image syntax: `![Customer quote screen](docs/assets/screenshots/customer-quote.png)`.
+3. For a demo video, either commit a short `.gif` directly (renders inline on GitHub, no extra clicks) or link out to a hosted video (YouTube/Loom) — a large `.mp4` committed to git bloats the repo and isn't the right place for it.
+
+**What's worth capturing first, in order of usefulness:**
+
+| Priority | What | Why |
+|:---:|---|---|
+| 1 | Customer flow: location entry → quote (with depth/confidence badge) → payment → tracking | The core product loop, most likely to be shown to a client or investor |
+| 2 | Contractor: nearby-resource search results + a booking request being accepted | Demonstrates the actual marketplace mechanic (`ADR-0004`) that differentiates this from a plain lead-tracker |
+| 3 | Native app: login + role routing | Proves the mobile path is real, even before its screens are built out |
 
 ---
 
