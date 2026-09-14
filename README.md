@@ -1,184 +1,198 @@
-# Borewell Platform
+<div align="center">
 
-A location-aware marketplace connecting borewell customers, contractors,
-and independent resource owners (rig/equipment/labour) in Tamil Nadu,
-starting with a pilot in Madurai district (Virudhunagar and other
-villages, expandable later). Customers request a borewell and get a
-location-aware quote; contractors manage leads, quotes, and jobs, and
-find nearby rigs/equipment through a real marketplace search; resource
-owners list their own fleet and accept or reject booking requests
-directly, independent of any one contractor.
+# 🛠️ Borewell Platform
 
-See `docs/rfc/0001-microservices-architecture.md` for the full
-architecture decision and `STRUCTURE.md` for how this repo is allowed to
-grow. `docs/adr/` holds every decision made since that RFC that changes
-or extends it - **read the ADRs, not just the original PRD/SRS/
-Architecture docs, for the current state of the product.** In particular:
-- `docs/adr/0002` - the frontend is one unified app (`apps/web-app`), not
-  three separate apps per role, as the original UI/UX doc described.
-- `docs/adr/0004` - resource ownership is a real multi-owner marketplace
-  ("Zomato for drilling rigs"), not a single contractor's own fleet, and
-  quotation pricing is location-aware for a pilot set of villages. This
-  is a real, deliberate expansion beyond the original MVP scope
-  documents, not a drift - see that ADR for the full reasoning.
+**A location-aware marketplace connecting borewell customers, contractors, and independent resource owners in Tamil Nadu.**
 
-> **If you're an AI coding agent (or setting one up to work in this
-> repo): read `AGENTS.md` first.** It's the canonical rulebook for
-> avoiding hallucinated endpoints, unnecessary code, and unverified
-> claims of "done" in this codebase. Nested `AGENTS.md` files in
-> `services/*/`, `apps/`, and `packages/contracts/` add domain-specific
-> rules on top of it.
+*Piloting in Madurai district (Virudhunagar and neighboring villages) — expandable from there.*
 
-## Services & Current State
+[![Backend CI](https://img.shields.io/badge/backend-4%20services-blue)]()
+[![Tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)]()
+[![Frontend](https://img.shields.io/badge/frontend-web%20%2B%20native-orange)]()
+[![License](https://img.shields.io/badge/status-pilot-lightgrey)]()
 
-| Service | Owner | Port (local) | Description |
+</div>
+
+---
+
+## 📍 What this is
+
+Customers request a borewell and get a **location-aware quote**. Contractors manage leads, generate quotes, and find nearby rigs and equipment through a **real cross-owner marketplace search** — not just their own fleet. Resource owners list their own equipment and accept or reject booking requests directly, independent of any single contractor.
+
+```mermaid
+flowchart LR
+    C([👤 Customer]) -->|1. submits job + location| PS[platform-spine]
+    PS -->|2. lead created| K([👷 Contractor])
+    K -->|3. searches nearby resources| RN[resource-network]
+    RN -->|4. finds rig, sends request| O([🏗️ Resource Owner])
+    O -->|5. accepts booking| RN
+    K -->|6. generates quote| Q[quotation]
+    Q -->|location-aware pricing lookup| RN
+    Q -->|7. quote ready| C
+    C -->|8. approves + pays| P[payments-data]
+    P -->|Razorpay order + webhook| RZ[(💳 Razorpay)]
+    K -->|9. advances job, logs completion| PS
+```
+
+> **📖 Read the docs in this order:** `docs/rfc/0001-microservices-architecture.md` for the original architecture decision → `docs/adr/*` for every real change since then → `AGENTS.md` for how to work in this codebase without guessing. **The ADRs are the source of truth where they conflict with the original PRD/SRS** — most notably `ADR-0002` (one unified frontend, not three) and `ADR-0004` (a real multi-owner marketplace, not a single contractor's fleet — the "Zomato for drilling rigs" pivot).
+
+> 🤖 **AI coding agents: read `AGENTS.md` first**, then the nested `AGENTS.md` files under `services/*/`, `apps/*/`, and `packages/contracts/`. They exist specifically to stop hallucinated endpoints and unverified "done" claims.
+
+---
+
+## 🧩 Services & Current State
+
+### Backend — 4 independent services, one database each
+
+| # | Service | Owner | Port | What it does |
+|---|---|:---:|:---:|---|
+| 🔐 | **`platform-spine`** | Dev A | `8001` | Identity/RBAC (`customer` · `contractor` · `resource_owner` · `admin`), job lifecycle state machine, job completion + quoted-vs-actual variance |
+| 💰 | **`quotation`** | Dev B | `8002` | Configurable pricing engine, **location-aware depth estimation** for pilot service areas, versioned quotations |
+| 🗺️ | **`resource-network`** | Dev C | `8003` | Multi-owner resource inventory, **cross-owner nearest-resource search**, booking request → accept/reject flow, pilot service-area data |
+| 💳 | **`payments-data`** | Dev D | `8004` | DB-enforced idempotent payments, **real Razorpay integration** (order creation + signed webhook) — code-complete, needs live API keys |
+
+### Frontend — two active surfaces, one reference set
+
+| | App | Stack | Status |
 |---|---|---|---|
-| platform-spine | Dev A | 8001 | Identity/RBAC (customer/contractor/resource_owner/admin), Job Orchestration state machine, job completion + variance tracking |
-| quotation | Dev B | 8002 | Configurable pricing engine, location-aware depth estimation (pilot service areas), quotations |
-| resource-network | Dev C | 8003 | Multi-owner resource inventory, cross-owner nearest-resource search, booking request flow (request/accept/reject), pilot service-area reference data |
-| payments-data | Dev D | 8004 | DB-enforced idempotent payments, sync cross-service validation, real Razorpay integration (order creation + signed webhook confirmation - needs live API keys, see `docs/deployment/PRODUCTION.md` section 4) |
-| web-app | - | 5173 (dev) / 80 (prod) | Single React/Vite frontend for all 4 roles - customer, contractor, resource_owner, admin (see `docs/adr/0002`) |
+| 🌐 | **`apps/web-app`** | React + Vite | One unified app for all 4 roles (`ADR-0002`) — real dashboards, real API wiring |
+| 📱 | **`apps/borewell-native`** | Expo / React Native | Scaffolded for iOS + Android — login, role routing, and secure session persistence work now; screens are placeholders with the build order documented in its own `AGENTS.md` |
+| 🧰 | **`apps/shared-ui`** | Plain JS | API client + auth helpers shared by `web-app` — **not** in the same npm workspace as `borewell-native` (Metro doesn't hoist well; see that app's `AGENTS.md`) |
+| 🗄️ | `apps/contractor-app`, `customer-app`, `resource-owner-app` | React | **Deprecated**, kept as reference only — see each folder's `DEPRECATED.md`. Don't build here. |
 
-`apps/shared-ui` is a shared npm workspace package (not a standalone
-service) holding API client functions and auth helpers used by `web-app`.
+---
 
-## Quick Start (local development)
+## 🚀 Quick Start — Local Development
 
-**Prerequisites:** Docker/Podman, Docker Compose / Podman Compose, Python 3.11+, Node.js 20+
+**Prerequisites:** Docker/Podman · Docker Compose · Python 3.11+ · Node.js 20+
 
 ```bash
-# 1. Clone the repo
-# 2. Copy and fill in secrets (only JWT_SECRET is required to start)
-cp services/platform-spine/.env.example services/platform-spine/.env
-# Edit: set JWT_SECRET to any long random string
+# 1️⃣  Clone the repo
 
-# 3. Start all 4 backend services, the frontend, databases, and redis
+# 2️⃣  Set the one required secret
+cp services/platform-spine/.env.example services/platform-spine/.env
+#    → edit JWT_SECRET to any long random string
+
+# 3️⃣  Bring up all 4 backend services + web-app + Postgres + Redis
 make up
 
-# 4. Verify everything is healthy
+# 4️⃣  Confirm every service is healthy
 curl localhost:8001/healthz   # platform-spine
 curl localhost:8002/healthz   # quotation
 curl localhost:8003/healthz   # resource-network
 curl localhost:8004/healthz   # payments-data
 
-# 5. Open the app
-# http://localhost:5173
+# 5️⃣  Open the app
+open http://localhost:5173
 ```
 
-Install `.pre-commit-config.yaml` locally (`pip install pre-commit && pre-commit install`) to catch lint and contract-drift issues before you commit, not just in CI.
-
-## Production Deployment
-
-Single-VM deployment via `docker-compose.prod.yml`, per Architecture doc
-section 10's explicit decision to stay off managed orchestration until
-there's real multi-contractor load. **Full runbook:
-`docs/deployment/PRODUCTION.md`** - covers secrets setup, first deploy,
-verification, HTTPS, redeploys, and rollback. Quick reference once
-`.env.prod` is configured:
+**Working on the native app instead?**
 
 ```bash
-make prod-up     # build + start the production stack
-make prod-logs   # follow logs
-make prod-down   # stop it
+cd apps/borewell-native
+cp .env.example .env          # use your machine's real LAN IP, not localhost
+npm install
+npm start                     # then press i (iOS) or a (Android)
 ```
 
-## Using the App
+💡 **Set up pre-commit hooks once**, so lint and contract-drift issues get caught before you commit, not just in CI:
 
-Register as any of the four roles from the frontend's registration
-screen - `customer`, `contractor`, `resource_owner`, or `admin`. Each
-role routes to its own dashboard after login (client-side routing only;
-the real access-control boundary is every backend service's `require_role`
-dependency - see each service's isolation tests, e.g.
-`resource-network/tests/test_resources.py` and `test_matching.py`).
+```bash
+pip install pre-commit && pre-commit install
+```
 
-**Typical flow across roles:**
-1. **resource_owner** registers, lists a rig/equipment (with location +
-   hourly rate) via their dashboard's "My Fleet" tab.
-2. **customer** submits a job request with a location.
-3. **contractor** sees the lead, optionally searches nearby resources for
-   that job ("Find Nearby Rigs"), sends a booking request.
-4. **resource_owner** accepts or rejects the request from their
-   dashboard's "Booking Requests" tab.
-5. **contractor** generates a quotation - location-aware if the job falls
-   within a configured pilot service area (Madurai district villages;
-   configure these via `POST /v1/service-areas`), otherwise the
-   contractor's flat configured assumption.
-6. **customer** reviews the quotation (depth range + confidence badge are
-   always shown, per UI/UX doc section 7) and approves it.
-7. **customer** pays through Razorpay Checkout - `payments-data` creates a
-   Razorpay order, the frontend opens Checkout, and Razorpay's signed
-   webhook confirms the payment on completion (needs live API keys in
-   production; see `docs/deployment/PRODUCTION.md` section 4 for setup,
-   and `services/payments-data/app/gateway/razorpay_client.py` for the
-   integration itself and its honest caveat about not being checked
-   against live Razorpay docs).
-8. **contractor** advances the job through its lifecycle and logs actual
-   depth/cost at completion; quoted-vs-actual variance is computed and
-   stored automatically.
+---
 
-## Raw API Developer Dashboard (optional, secondary to `web-app`)
+## ☁️ Production Deployment
 
-`tools/demo-frontend` is a single-file, dependency-free HTML dashboard for
-exercising every backend endpoint directly - useful for verifying service
-health and API behavior without going through the full product UI/role
-flow. It predates `web-app` and is not a substitute for it; use `web-app`
-(above) for anything resembling the real product experience, and this
-for quick backend-only debugging.
+Single-VM deployment via `docker-compose.prod.yml` — a deliberate choice per `Architecture §10`: no managed orchestration until there's real multi-contractor load to justify it.
+
+**📘 Full runbook: [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md)** — secrets setup, first deploy, verification, HTTPS, Razorpay dashboard setup, redeploys, rollback.
+
+```bash
+make prod-up     # 🏗️  build + start the production stack
+make prod-logs   # 📜  follow logs
+make prod-down   # 🛑  stop it
+```
+
+---
+
+## 🔄 Using the App — a full walkthrough
+
+Register as any of the four roles from the registration screen. Each role routes to its own dashboard (**client-side routing is UX only** — the real access-control boundary is every backend service's `require_role` dependency; see e.g. `resource-network/tests/test_resources.py`).
+
+| Step | Who | What happens |
+|:---:|---|---|
+| 1️⃣ | 🏗️ **Resource Owner** | Registers → lists a rig or equipment (location + hourly rate) in **My Fleet** |
+| 2️⃣ | 👤 **Customer** | Submits a job request with a location |
+| 3️⃣ | 👷 **Contractor** | Sees the lead → **Find Nearby Rigs** searches the real marketplace → sends a booking request |
+| 4️⃣ | 🏗️ **Resource Owner** | Accepts or rejects the request in **Booking Requests** |
+| 5️⃣ | 👷 **Contractor** | Generates a quotation — **location-aware** if the job falls inside a configured pilot service area, otherwise the contractor's flat assumption |
+| 6️⃣ | 👤 **Customer** | Reviews the quote (depth range + confidence badge are *always* shown, per `UI/UX §7`) and approves it |
+| 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** — `payments-data` creates the order, the signed webhook confirms it (needs live keys in production — see `PRODUCTION.md §4`) |
+| 8️⃣ | 👷 **Contractor** | Advances the job through its lifecycle, logs actual depth/cost at completion — variance is computed automatically |
+
+---
+
+## 🧪 Raw API Developer Dashboard *(optional, secondary to `web-app`)*
+
+`tools/demo-frontend` is a single-file, dependency-free HTML dashboard for exercising every backend endpoint directly — useful for verifying service health without going through the full product UI.
 
 ```bash
 python3 -m http.server 3000 --directory tools/demo-frontend
-# then open http://localhost:3000
+# → http://localhost:3000
 ```
 
-## Development Commands
+---
+
+## ⚙️ Development Commands
 
 ```bash
-make test             # runs each backend service's test suite
-make up               # start the dev stack (backend + frontend + DBs + redis)
-make down             # stops everything and removes volumes
-make lint             # ruff check across all backend services
-make check-contracts  # verifies no service exposes an undeclared endpoint
-make migrate          # runs `alembic upgrade head` on all 4 backend services
-make prod-up          # build + start the production stack (needs .env.prod)
-make prod-down        # stop the production stack
-make prod-logs        # follow production logs
+make test             # 🧪 run every backend service's test suite
+make up                # 🚀 start the dev stack (backend + web-app + DBs + redis)
+make down              # 🛑 stop everything, remove volumes
+make lint              # 🔍 ruff check — backend
+make lint-frontend     # 🔍 eslint — web-app + shared-ui
+make lint-all          # 🔍 both of the above
+make check-contracts   # 📐 verify no service exposes an undeclared endpoint
+make migrate           # 🗃️  alembic upgrade head, all 4 backend services
+make prod-up           # ☁️  build + start the production stack (needs .env.prod)
+make prod-down         # 🛑 stop the production stack
+make prod-logs         # 📜 follow production logs
 ```
 
-## Continuous Integration
+---
 
-Every workflow lives in `.github/workflows/`, runs automatically on push/PR,
-and is reproducible locally with the exact command it runs (no CI-only
-magic):
+## ✅ Continuous Integration
 
-| Workflow | What it checks | Path-scoped? |
-|---|---|---|
-| `ci-platform-spine.yml`, `ci-quotation.yml`, `ci-resource-network.yml`, `ci-payments-data.yml` | That service's own `pytest` suite, `ruff check`, and `check_contract.py` - matches `make test`/`make lint`/`make check-contracts` for that one service | Yes - only runs when that service (or the contract it implements) changes |
-| `ci-frontend.yml` | `npm install` (from repo root - `web-app` depends on `shared-ui` via an npm workspace, not a published package) + `npm run build --workspace=web-app` | Yes - `apps/**` |
-| `ci-deployment.yml` | Both compose files parse (`docker compose config`), and every Dockerfile in the repo (4 backend + frontend prod + frontend dev) actually builds | Yes - compose/Dockerfile changes |
-| `ci-integration.yml` | **The one workflow that boots all 4 real services via `docker compose up` and runs a real cross-service flow over real HTTP** - registration/login, job creation, cross-owner marketplace search, booking request/accept, location-aware quotation generation, approval, payment creation, full job-status lifecycle, completion + variance. See `tools/integration-test/run_integration_test.py` for the script and its own header comment for exactly what it does and does not prove. | No - runs on every push/PR regardless of which files changed, since a multi-service regression is exactly what path-scoped checks can miss |
+Every workflow lives in `.github/workflows/`, runs on every push/PR, and is reproducible locally with the exact command it runs — no CI-only magic.
 
-**Why a separate integration workflow, when 4 services already have their
-own CI:** every per-service test suite mocks every cross-service call by
-design (see e.g. `fake_job_fetcher` in `services/quotation/tests/conftest.py`)
-- that's correct for testing one service in isolation, but it means no
-existing workflow ever proved the services actually work *together*. This
-was a real, explicit requirement in `Borewell_05_Development_Plan.md`
-("the Milestone 2 end-to-end flow, run via Docker Compose in CI, not just
-locally") that nothing satisfied until `ci-integration.yml` - not a
-speculative addition.
+| Workflow | Checks | Scope |
+|---|---|:---:|
+| `ci-platform-spine.yml`<br>`ci-quotation.yml`<br>`ci-resource-network.yml`<br>`ci-payments-data.yml` | That service's `pytest` suite + `ruff check` + `check_contract.py` | 🎯 path-scoped |
+| `ci-frontend.yml` | `npm install` from repo root (workspace-aware) + `npm run lint` + `npm run build --workspace=web-app` | 🎯 `apps/**` |
+| `ci-borewell-native.yml` | `eslint-config-expo` lint + a real **Metro bundle** for iOS (proves every import in the app actually resolves) | 🎯 `apps/borewell-native/**` |
+| `ci-deployment.yml` | Both compose files parse + every Dockerfile in the repo actually builds | 🎯 compose/Dockerfile changes |
+| `ci-integration.yml` | 🔥 **The one workflow that boots all 4 real services via `docker compose up`** and runs a genuine cross-service flow over real HTTP — registration, job creation, marketplace search, booking accept, location-aware quotation, approval, payment, full lifecycle, completion + variance | 🌍 every push/PR, unscoped |
 
-**What CI does *not* cover, stated plainly rather than implied:** Redis
-event consumption. Every service publishes events (`job.created`,
-`job.quoted`, `job.completed`, `payment.completed` - see each service's
-`app/events.py`), but nothing in this codebase subscribes to or acts on
-them yet (`grep -rn "subscribe" services/*/app/` returns nothing). No
-workflow tests this because there's nothing on the consuming side to
-test - a green CI run is not a claim that event-driven behavior works.
+> **Why a separate integration workflow?** Every per-service suite mocks its cross-service calls by design (see `fake_job_fetcher` in `services/quotation/tests/conftest.py`) — correct for testing one service in isolation, but it means no other workflow ever proved the services work *together*. This was an explicit, pre-existing requirement in `Borewell_05_Development_Plan.md` ("the Milestone 2 end-to-end flow, run via Docker Compose in CI") that nothing satisfied until `ci-integration.yml`.
 
-## Before you touch the top-level structure
+> ⚠️ **What CI does *not* cover:** Redis event consumption. Every service publishes events (`job.created`, `job.quoted`, `job.completed`, `payment.completed`), but nothing in this codebase subscribes to them yet — confirmed by `grep -rn "subscribe" services/*/app/` returning nothing. A green CI run is not a claim that event-driven behavior works.
 
-Read `STRUCTURE.md` first. New services/apps are added by following the existing template folders, not by renaming or restructuring what's already here.
+---
 
-## Contracts
+## 📁 Before you touch the top-level structure
 
-`packages/contracts/` is the source of truth for all inter-service communication — OpenAPI specs for synchronous calls, JSON Schema for events. Change contracts there first, in a reviewed PR, before changing service code that depends on them.
+Read **`STRUCTURE.md`** first. New services and apps are added by following the existing template folders — not by renaming or restructuring what's already here.
+
+## 📐 Contracts
+
+`packages/contracts/` is the source of truth for all inter-service communication — OpenAPI specs for synchronous calls, JSON Schema for events. **Change contracts there first**, in a reviewed PR, before changing any service code that depends on them.
+
+---
+
+<div align="center">
+
+*Questions about a specific decision? Check `docs/adr/` before asking — it's probably already answered there.*
+
+</div>
