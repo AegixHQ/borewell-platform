@@ -112,6 +112,18 @@ class Quotation(Base):
     estimated_depth_max_ft = Column(Float, nullable=False)
     confidence = Column(String, nullable=False, default="low")
 
+    # BR-05: snapshot of the contractor's PricingRule.depth_overage_rate_per_ft
+    # at the moment this quotation version was created/edited - NOT a live
+    # reference to the current rule. Same reasoning as every other field on
+    # this row: if the contractor changes their rate after a quote was
+    # generated, the quote (and what the customer approved) must keep
+    # reflecting the rate that applied then, not whatever is configured now
+    # (BR-06's "the contractor cannot silently change an approved price",
+    # applied to this field too). Nullable only for rows that predate this
+    # column (migration 0003) - every quotation created after it always has
+    # a value, since _get_rule() is required to generate a quote at all.
+    depth_overage_rate_per_ft = Column(MONEY, nullable=True)
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (

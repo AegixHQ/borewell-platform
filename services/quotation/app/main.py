@@ -176,6 +176,7 @@ def _quotation_to_response(q: models.Quotation) -> schemas.QuotationResponse:
         margin_amount=q.margin_amount,
         minimum_charge_applied=q.minimum_charge_applied,
         total_estimate=q.total,
+        depth_overage_rate_per_ft=q.depth_overage_rate_per_ft,
         created_at=q.created_at,
     )
 
@@ -270,6 +271,7 @@ def generate_quotation(
         estimated_depth_min_ft=depth.min_ft,
         estimated_depth_max_ft=depth.max_ft,
         confidence=depth.confidence,
+        depth_overage_rate_per_ft=rule.depth_overage_rate_per_ft,
     )
     db.add(quotation)
     db.commit()
@@ -394,6 +396,9 @@ def edit_quotation(
         estimated_depth_min_ft=existing.estimated_depth_min_ft,
         estimated_depth_max_ft=existing.estimated_depth_max_ft,
         confidence=existing.confidence,
+        depth_overage_rate_per_ft=(
+            rule.depth_overage_rate_per_ft if rule else existing.depth_overage_rate_per_ft
+        ),
     )
     db.add(new_version)
     db.commit()

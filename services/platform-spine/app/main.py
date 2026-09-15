@@ -1,6 +1,6 @@
 import os
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -328,14 +328,38 @@ def log_job_completion(
     # BR-04: variance = actual_cost - quoted_total (negative = under budget).
     variance = actual_cost - quoted_total
 
-    # BR-05: depth overage is priced if actual > quoted max. The overage
-    # rate isn't stored on the quotation response directly (it's a pricing
-    # rule config field), so for MVP we record the overage feet and set the
-    # charge to 0 with a TODO. The rate would need a pricing-rule lookup
-    # endpoint or embedding in the quotation response to automate this.
-    # See packages/contracts/openapi/quotation.yaml for what's available now.
+    # BR-05: depth overage is priced at the contractor's configured
+    # per-foot overage rate, applied transparently (SRS section 4) - the
+    # rate snapshotted on the quotation at generation/edit time (quotation
+    # service's models.Quotation docstring explains why it's a snapshot,
+    # not a live lookup). Missing only for quotations that predate that
+    # snapshot field (quotation service migration 0003) - for those, the
+    # overage feet are still recorded and shown (never hidden), but the
+    # charge honestly cannot be computed rather than silently defaulting
+    # to 0 and looking like "no overage occurred" when one did.
     depth_overage_ft = max(0.0, payload.actual_depth_ft - quotation["max_ft"])
-    depth_overage_charge = Decimal("0")  # TODO: fetch overage_rate_per_ft from pricing rule
+    overage_rate = quotation.get("depth_overage_rate_per_ft")
+    if depth_overage_ft > 0 and overage_rate is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "OVERAGE_RATE_UNAVAILABLE",
+                "message": (
+                    f"Actual depth ({payload.actual_depth_ft} ft) exceeds the quoted "
+                    f"max ({quotation['max_ft']} ft), but this quotation predates "
+                    "per-foot overage rate tracking and has no rate to charge "
+                    "against. Completion cannot be logged accurately - contact "
+                    "an admin to resolve this specific quotation."
+                ),
+            },
+        )
+    depth_overage_charge = (
+        (Decimal(str(depth_overage_ft)) * overage_rate).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if depth_overage_ft > 0
+        else Decimal("0")
+    )
 
     from datetime import datetime, timezone
     completed_at = datetime.now(timezone.utc)

@@ -218,4 +218,5 @@ components:
         margin_amount: { type: string, format: decimal, example: "12450.00" }
         minimum_charge_applied: { type: boolean }
         total_estimate: { type: string, format: decimal, example: "95450.00" }
+        depth_overage_rate_per_ft: { type: string, format: decimal, nullable: true, description: "Snapshot of the contractor's overage rate at generation/edit time (BR-05) - null only for quotations predating this field" }
         created_at: { type: string, format: date-time }

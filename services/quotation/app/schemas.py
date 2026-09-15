@@ -83,6 +83,11 @@ class QuotationResponse(BaseModel):
     margin_amount: Decimal
     minimum_charge_applied: bool
     total_estimate: Decimal
+    # BR-05: snapshot of the contractor's pricing-rule overage rate at
+    # generation/edit time - see models.Quotation's docstring for why this
+    # is a snapshot, not a live lookup. Optional/None only for rows that
+    # predate migration 0003.
+    depth_overage_rate_per_ft: Optional[Decimal] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

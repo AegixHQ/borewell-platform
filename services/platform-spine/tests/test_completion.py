@@ -16,6 +16,7 @@ MOCK_QUOTATION = {
     "total_estimate": Decimal("80000.00"),
     "min_ft": 200.0,
     "max_ft": 250.0,
+    "depth_overage_rate_per_ft": Decimal("150.00"),
 }
 MOCK_PATCH = "app.quotation_client.fetch_approved_quotation"
 
@@ -133,12 +134,16 @@ def test_completion_only_writable_once(client):
 
 
 def test_depth_overage_computed_when_actual_exceeds_max(client):
-    """BR-05: depth_overage_ft is positive when actual > max_ft."""
+    """BR-05: depth_overage_ft is positive when actual > max_ft, and the
+    overage charge is computed at the quotation's snapshotted per-foot
+    rate (MOCK_QUOTATION's depth_overage_rate_per_ft: 150.00) - priced
+    transparently, not silently added (SRS section 4's exact wording)."""
     cust = _register_and_login(client, "c4@example.com", "customer")
     cont = _register_and_login(client, "k4@example.com", "contractor")
     job_id = _create_job_at_completion(client, cust, cont)
 
     # actual_depth_ft=280 > max_ft=250 from MOCK_QUOTATION -> overage=30ft
+    # 30ft * 150.00/ft = 4500.00
     with patch(MOCK_PATCH, return_value=MOCK_QUOTATION):
         resp = client.post(
             f"/v1/jobs/{job_id}/completion",
@@ -146,7 +151,53 @@ def test_depth_overage_computed_when_actual_exceeds_max(client):
             headers={"Authorization": f"Bearer {cont}"},
         )
     assert resp.status_code == 201
-    assert resp.json()["depth_overage_ft"] == 30.0
+    body = resp.json()
+    assert body["depth_overage_ft"] == 30.0
+    assert Decimal(body["depth_overage_charge"]) == Decimal("4500.00")
+
+
+def test_no_overage_charge_when_actual_within_quoted_range(client):
+    """The inverse case: actual depth within range -> zero overage feet
+    AND zero charge, not just zero feet with an unverified charge."""
+    cust = _register_and_login(client, "c-nooverage@example.com", "customer")
+    cont = _register_and_login(client, "k-nooverage@example.com", "contractor")
+    job_id = _create_job_at_completion(client, cust, cont)
+
+    with patch(MOCK_PATCH, return_value=MOCK_QUOTATION):
+        resp = client.post(
+            f"/v1/jobs/{job_id}/completion",
+            json={"actual_depth_ft": 240.0, "actual_cost": 75000.0},
+            headers={"Authorization": f"Bearer {cont}"},
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["depth_overage_ft"] == 0.0
+    assert Decimal(body["depth_overage_charge"]) == Decimal("0")
+
+
+def test_completion_rejected_when_overage_occurs_but_rate_unavailable(client):
+    """A quotation predating migration 0003 (depth_overage_rate_per_ft
+    absent entirely, not just None) must not silently charge 0 for a real
+    overage - that would look identical to 'no overage occurred', which is
+    worse than an explicit, honest rejection (OVERAGE_RATE_UNAVAILABLE)."""
+    cust = _register_and_login(client, "c-norate@example.com", "customer")
+    cont = _register_and_login(client, "k-norate@example.com", "contractor")
+    job_id = _create_job_at_completion(client, cust, cont)
+
+    old_style_quotation = {
+        "total_estimate": Decimal("80000.00"),
+        "min_ft": 200.0,
+        "max_ft": 250.0,
+        "depth_overage_rate_per_ft": None,
+    }
+    with patch(MOCK_PATCH, return_value=old_style_quotation):
+        resp = client.post(
+            f"/v1/jobs/{job_id}/completion",
+            json={"actual_depth_ft": 280.0, "actual_cost": 95000.0},
+            headers={"Authorization": f"Bearer {cont}"},
+        )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "OVERAGE_RATE_UNAVAILABLE"
 
 
 def test_customer_can_read_own_completion_record(client):

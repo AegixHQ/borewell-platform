@@ -63,6 +63,10 @@ def test_generate_quotation_with_pricing_rule(client):
     assert Decimal(body["total_estimate"]) == Decimal("95450.00")
     assert body["minimum_charge_applied"] is False
     assert len(body["line_items"]) == 6
+    # BR-05: the overage rate is snapshotted from the pricing rule that
+    # generated this quote (BASE_RULE's depth_overage_rate_per_ft: 200),
+    # not left null or looked up fresh later.
+    assert Decimal(body["depth_overage_rate_per_ft"]) == Decimal("200.00")
 
 
 def test_customer_cannot_generate_quotation(client):
@@ -130,6 +134,30 @@ def test_editing_quotation_creates_new_version(client):
         f"/v1/quotations/{quotation_id}", headers={"Authorization": f"Bearer {token}"}
     )
     assert Decimal(original.json()["total_estimate"]) == Decimal("95450.00")
+
+
+def test_editing_quotation_snapshots_current_overage_rate_not_original(client):
+    # BR-05/BR-06: an edit re-fetches the contractor's CURRENT pricing rule
+    # (same as it already does for minimum_job_charge) - if the rate
+    # changed between the original quote and this edit, the edited version
+    # should carry the new rate, not silently keep the stale one. This is
+    # the one behavior this field exists for and wasn't otherwise proven.
+    token = _setup_rule(client, "contractor-overage-edit", depth_overage_rate_per_ft=200)
+    create_resp = client.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    assert Decimal(create_resp.json()["depth_overage_rate_per_ft"]) == Decimal("200.00")
+
+    # Contractor updates their rate before editing the quote.
+    _setup_rule(client, "contractor-overage-edit", depth_overage_rate_per_ft=275)
+
+    edit_resp = client.patch(
+        f"/v1/quotations/{create_resp.json()['quotation_id']}",
+        json={"total_estimate": 99999},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert edit_resp.status_code == 201
+    assert Decimal(edit_resp.json()["depth_overage_rate_per_ft"]) == Decimal("275.00")
 
 
 def test_other_contractor_cannot_edit_quotation(client):

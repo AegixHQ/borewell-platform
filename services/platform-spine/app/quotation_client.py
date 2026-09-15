@@ -34,8 +34,12 @@ def fetch_approved_quotation(job_id: str, auth_header: str) -> dict:
         quotation_client.py's comment on why parse_float=Decimal matters)
       - min_ft: float
       - max_ft: float
-      - depth_overage_rate_per_ft: Decimal (from pricing rule embedded
-        in quotation response)
+      - depth_overage_rate_per_ft: Decimal | None - the rate snapshotted on
+        the quotation at generation/edit time (BR-05). None only for
+        quotations that predate quotation service's migration 0003 - this
+        docstring previously (wrongly) claimed this field was already
+        returned before it actually was; fixed alongside actually adding it,
+        not left as a stale promise.
 
     Raises QuotationNotFound, QuotationNotApproved, or QuotationServiceError.
     """
@@ -67,8 +71,17 @@ def fetch_approved_quotation(job_id: str, auth_header: str) -> dict:
     total_estimate = Decimal(str(body["total_estimate"]))
     depth_range = body.get("estimated_depth_range", {})
 
+    # Same Decimal-string handling as total_estimate above. None only for
+    # quotations generated before migration 0003 added this field - see
+    # quotation service's models.Quotation docstring.
+    overage_rate_raw = body.get("depth_overage_rate_per_ft")
+    depth_overage_rate_per_ft = (
+        Decimal(str(overage_rate_raw)) if overage_rate_raw is not None else None
+    )
+
     return {
         "total_estimate": total_estimate,
         "min_ft": depth_range.get("min_ft", 0.0),
         "max_ft": depth_range.get("max_ft", 0.0),
+        "depth_overage_rate_per_ft": depth_overage_rate_per_ft,
     }
