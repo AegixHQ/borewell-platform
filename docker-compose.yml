@@ -11,6 +11,12 @@ services:
       POSTGRES_PASSWORD: borewell
     volumes:
       - pg_platform_spine:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U borewell -d platform_spine" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   postgres-quotation:
     image: docker.io/library/postgres:16-alpine
@@ -22,6 +28,12 @@ services:
       POSTGRES_PASSWORD: borewell
     volumes:
       - pg_quotation:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U borewell -d quotation" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   postgres-resource-network:
     image: docker.io/library/postgres:16-alpine
@@ -33,6 +45,12 @@ services:
       POSTGRES_PASSWORD: borewell
     volumes:
       - pg_resource_network:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U borewell -d resource_network" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   postgres-payments-data:
     image: docker.io/library/postgres:16-alpine
@@ -44,17 +62,30 @@ services:
       POSTGRES_PASSWORD: borewell
     volumes:
       - pg_payments_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U borewell -d payments_data" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   redis:
     image: docker.io/library/redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   platform-spine:
     build: ./services/platform-spine
     depends_on:
-      - postgres-platform-spine
-      - redis
+      postgres-platform-spine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-platform-spine:5432/platform_spine
       REDIS_URL: redis://redis:6379/0
@@ -68,8 +99,10 @@ services:
   quotation:
     build: ./services/quotation
     depends_on:
-      - postgres-quotation
-      - redis
+      postgres-quotation:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-quotation:5432/quotation
       REDIS_URL: redis://redis:6379/0
@@ -83,8 +116,10 @@ services:
   resource-network:
     build: ./services/resource-network
     depends_on:
-      - postgres-resource-network
-      - redis
+      postgres-resource-network:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-resource-network:5432/resource_network
       REDIS_URL: redis://redis:6379/0
@@ -96,8 +131,10 @@ services:
   payments-data:
     build: ./services/payments-data
     depends_on:
-      - postgres-payments-data
-      - redis
+      postgres-payments-data:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://borewell:borewell@postgres-payments-data:5432/payments_data
       REDIS_URL: redis://redis:6379/0
