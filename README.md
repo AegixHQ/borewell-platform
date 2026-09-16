@@ -199,7 +199,7 @@ Every workflow lives in `.github/workflows/`, runs on every push/PR, and is repr
 
 > **Why a separate integration workflow?** Every per-service suite mocks its cross-service calls by design (see `fake_job_fetcher` in `services/quotation/tests/conftest.py`) — correct for testing one service in isolation, but it means no other workflow ever proved the services work *together*. This was an explicit, pre-existing requirement in `Borewell_05_Development_Plan.md` ("the Milestone 2 end-to-end flow, run via Docker Compose in CI") that nothing satisfied until `ci-integration.yml`.
 
-> ⚠️ **What CI does *not* cover:** Redis event consumption. Every service publishes events (`job.created`, `job.quoted`, `job.completed`, `payment.completed`), but nothing in this codebase subscribes to them yet — confirmed by `grep -rn "subscribe" services/*/app/` returning nothing. A green CI run is not a claim that event-driven behavior works.
+> ⚠️ **What CI does *not* cover:** Redis event consumption, mostly. `platform-spine` now has one real consumer (`payment.completed` → advances a job from `completion` to `payment`, enforcing `BR-03` — see `services/platform-spine/app/payment_consumer.py`), tested directly (`tests/test_payment_consumer.py`) and verified against a real Redis instance during development, but **not yet exercised by `ci-integration.yml`** (that workflow doesn't publish a real `payment.completed` event mid-flow). The other three events (`job.created`, `job.quoted`, `job.completed`) are still publish-only — confirmed by `grep -rn "subscribe" services/*/app/` returning exactly one file. A green CI run is not a claim that every event-driven reaction works, only the one that's actually wired.
 
 ---
 

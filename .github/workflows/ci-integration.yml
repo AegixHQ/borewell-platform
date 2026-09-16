@@ -12,8 +12,10 @@ name: CI - integration (real cross-service flow)
 # `docker compose up` and proves they work together over real HTTP - see
 # tools/integration-test/run_integration_test.py for the actual script
 # and its own header comment for the full scope/honesty notes (including
-# what this does NOT cover - Redis event consumption, since nothing in
-# this codebase consumes events yet).
+# what this does NOT cover - this script's synchronous HTTP flow does
+# not publish/verify any Redis event; platform-spine's payment.completed
+# consumer, services/platform-spine/app/payment_consumer.py, is real and
+# unit-tested but not yet exercised here).
 #
 # Runs on every push/PR regardless of which files changed (no path
 # filter) - unlike the per-service workflows, this is the one check

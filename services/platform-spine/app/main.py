@@ -1,5 +1,6 @@
 import os
 import uuid
+from contextlib import asynccontextmanager
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -10,16 +11,31 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import events, models, quotation_client, schemas
+from app import events, models, payment_consumer, quotation_client, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.job_state_machine import InvalidTransitionError, validate_transition
 from app.security import create_access_token, hash_password, verify_password
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Real event consumer - see app/payment_consumer.py's module docstring
+    # for the full design rationale. Starting this here (not at import
+    # time) means importing app.main in tests never spins up a background
+    # thread/Redis connection unintentionally - it only starts when the
+    # app itself actually starts (including under TestClient's `with`
+    # form, which does trigger this - confirmed by running the real test
+    # suite, not assumed).
+    payment_consumer.start()
+    yield
+
+
 app = FastAPI(
     title="platform-spine",
     version="0.1.0",
     description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing",
+    lifespan=_lifespan,
 )
 
 _ALLOWED_ORIGINS = [

@@ -38,6 +38,13 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
+        # Exposed so tests that need a real DB session OUTSIDE the HTTP
+        # layer (e.g. calling an event consumer's handler function
+        # directly - see test_payment_consumer.py) can open one bound to
+        # this SAME in-memory engine, not the production app.database
+        # engine (a real Postgres URL by default) - without this, such a
+        # test would silently read/write an empty, unrelated database.
+        c.test_session_local = testing_session_local
         yield c
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=engine)

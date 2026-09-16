@@ -15,16 +15,21 @@ fake_quotation_fetcher, fake_location_fetcher, etc. - see each service's
 tests/conftest.py). None of them prove the services actually work
 TOGETHER over real HTTP. This script is what does that.
 
-HONEST SCOPE NOTE: this covers the synchronous HTTP flow only. Redis
-event wiring (job.created, job.quoted, job.completed, payment.completed)
-is published by every service (see app/events.py in each) but has ZERO
-consumers anywhere in this codebase - confirmed by `grep -rn "subscribe"
-services/*/app/` returning nothing. Development Plan Milestone 2's
+HONEST SCOPE NOTE: this covers the synchronous HTTP flow only. Of the 4
+events (job.created, job.quoted, job.completed, payment.completed -
+published by every service, see app/events.py in each), only one has a
+real consumer: platform-spine's payment.completed -> advances a job from
+"completion" to "payment" (services/platform-spine/app/payment_consumer.py,
+unit-tested in tests/test_payment_consumer.py, verified end-to-end
+against a real Redis instance during development). The other 3 remain
+publish-only - confirmed by `grep -rn "subscribe" services/*/app/`
+returning exactly one file. This script does not publish or verify any
+event, including the one real consumer - Development Plan Milestone 2's
 second row ("Each event is both emitted and consumed correctly") is
-therefore NOT verified by this script, because there is nothing on the
-consuming side to verify yet. Do not read a green run of this script as
-proof that event wiring works - it isn't tested here, and pretending
-otherwise would be worse than leaving it visibly unverified.
+still only partially true and still not exercised by this script
+specifically. Do not read a green run of this script as proof that
+event-driven behavior works end-to-end - it isn't tested here, and
+pretending otherwise would be worse than leaving it visibly unverified.
 
 Exit code 0 = every step passed. Exit code 1 = a step failed; the
 specific step and response are printed before exiting, so CI logs show
