@@ -11,11 +11,15 @@ name: CI - integration (real cross-service flow)
 # This is the one workflow that boots all 4 services for real via
 # `docker compose up` and proves they work together over real HTTP - see
 # tools/integration-test/run_integration_test.py for the actual script
-# and its own header comment for the full scope/honesty notes (including
-# what this does NOT cover - this script's synchronous HTTP flow does
-# not publish/verify any Redis event; platform-spine's payment.completed
-# consumer, services/platform-spine/app/payment_consumer.py, is real and
-# unit-tested but not yet exercised here).
+# and its own header comment for the full scope/honesty notes. As of the
+# script's step 8, this also covers the one real event consumer in this
+# codebase (platform-spine's payment.completed subscriber,
+# services/platform-spine/app/payment_consumer.py) against real Redis
+# pub/sub in the real compose stack - not just its unit test, which calls
+# the handler function directly and never touches Redis. The other 3
+# events (job.created, job.quoted, job.completed) remain publish-only,
+# confirmed by `grep -rn "subscribe" services/*/app/` still returning
+# exactly one file - still not exercised here.
 #
 # Runs on every push/PR regardless of which files changed (no path
 # filter) - unlike the per-service workflows, this is the one check
@@ -41,7 +45,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install integration test dependencies
-        run: pip install --quiet requests
+        # redis added alongside requests for step 8's real pub/sub
+        # subscription (see run_integration_test.py) - no
+        # tools/integration-test/requirements.txt exists yet, so this
+        # inline install is the one place that list lives; keep both in
+        # sync with the script's actual imports if either changes.
+        run: pip install --quiet requests redis
 
       - name: Start the full stack
         # --build ensures this always tests the actual current code, not

@@ -15,21 +15,27 @@ fake_quotation_fetcher, fake_location_fetcher, etc. - see each service's
 tests/conftest.py). None of them prove the services actually work
 TOGETHER over real HTTP. This script is what does that.
 
-HONEST SCOPE NOTE: this covers the synchronous HTTP flow only. Of the 4
-events (job.created, job.quoted, job.completed, payment.completed -
-published by every service, see app/events.py in each), only one has a
-real consumer: platform-spine's payment.completed -> advances a job from
-"completion" to "payment" (services/platform-spine/app/payment_consumer.py,
-unit-tested in tests/test_payment_consumer.py, verified end-to-end
-against a real Redis instance during development). The other 3 remain
-publish-only - confirmed by `grep -rn "subscribe" services/*/app/`
-returning exactly one file. This script does not publish or verify any
-event, including the one real consumer - Development Plan Milestone 2's
-second row ("Each event is both emitted and consumed correctly") is
-still only partially true and still not exercised by this script
-specifically. Do not read a green run of this script as proof that
-event-driven behavior works end-to-end - it isn't tested here, and
-pretending otherwise would be worse than leaving it visibly unverified.
+HONEST SCOPE NOTE: of the 4 events (job.created, job.quoted, job.completed,
+payment.completed - published by every service, see app/events.py in
+each), only one has a real consumer: platform-spine's payment.completed
+-> advances a job from "completion" to "payment"
+(services/platform-spine/app/payment_consumer.py, unit-tested in
+tests/test_payment_consumer.py). This script now covers that one real
+consumer end-to-end for real (step 8 below): it confirms a real payment
+via POST /v1/payments/{id}/confirm (which is what actually calls
+events.payment_completed() - see services/payments-data/app/main.py;
+plain POST /v1/payments only creates a 'pending' row and does NOT
+publish), then polls the job via GET /v1/jobs/{id} until platform-spine's
+background subscriber thread picks the message up off real Redis and
+advances the job to 'payment' - proving publish, delivery, AND the
+consumer's reaction, not just that a message was sent. The other 3
+events remain publish-only - confirmed by `grep -rn "subscribe"
+services/*/app/` returning exactly one file - and still are not
+exercised by this script. Development Plan Milestone 2's second row
+("Each event is both emitted and consumed correctly") is still only
+partially true for those 3; do not read a green run of this script as
+proof that all 4 events work end-to-end, only that the one real
+consumer does.
 
 Exit code 0 = every step passed. Exit code 1 = a step failed; the
 specific step and response are printed before exiting, so CI logs show
@@ -40,15 +46,27 @@ import sys
 import time
 import uuid
 
+import redis
 import requests
 
 PLATFORM_SPINE_URL = os.getenv("PLATFORM_SPINE_URL", "http://localhost:8001")
 QUOTATION_URL = os.getenv("QUOTATION_URL", "http://localhost:8002")
 RESOURCE_NETWORK_URL = os.getenv("RESOURCE_NETWORK_URL", "http://localhost:8003")
 PAYMENTS_URL = os.getenv("PAYMENTS_URL", "http://localhost:8004")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 READY_TIMEOUT_SECONDS = 90
 READY_POLL_INTERVAL_SECONDS = 2
+
+# How long to wait for platform-spine's background subscriber thread to
+# pick up the payment.completed message and advance the job. Generous
+# relative to how fast this actually happens locally (sub-second - it's
+# a blocking pubsub.listen() loop, not a poll) because CI runners under
+# load are slower and this is genuinely asynchronous: unlike every other
+# step in this script, there's no synchronous HTTP response that proves
+# the reaction already happened by the time we get a 200 back.
+EVENT_CONSUMER_TIMEOUT_SECONDS = 15
+EVENT_CONSUMER_POLL_INTERVAL_SECONDS = 1
 
 # Unique per run so re-running this script against a stack that already
 # has data from a prior run (e.g. a developer running it twice locally
@@ -138,10 +156,16 @@ def run():
     wait_for_ready("resource-network", RESOURCE_NETWORK_URL)
     wait_for_ready("payments-data", PAYMENTS_URL)
 
-    # ---------- 1. Register the 3 roles this flow needs ----------
+    # ---------- 1. Register the 4 roles this flow needs ----------
     customer_token = register_and_login("customer", "customer")
     contractor_token = register_and_login("contractor", "contractor")
     owner_token = register_and_login("resource_owner", "owner")
+    # admin only needed for step 8's POST /v1/payments/{id}/confirm - see
+    # that endpoint's own docstring for why this is the real path a
+    # frontend would never call directly (Razorpay's webhook is), but is
+    # exactly right here since this script has no real Razorpay account
+    # to trigger a real webhook with.
+    admin_token = register_and_login("admin", "admin")
 
     # ---------- 2. lead: customer creates a job ----------
     # Real coordinates inside Virudhunagar (pilot service area territory -
@@ -415,6 +439,93 @@ def run():
         f"quoted_total={completion['quoted_total']}, variance={completion['variance']} "
         f"(real cross-service call from platform-spine to quotation for the "
         f"approved total happened here, not a mock)"
+    )
+
+    # ---------- 8. payment.completed event: publish, deliver, AND consume ----------
+    # Steps 1-7 above only prove the synchronous HTTP flow. This step is
+    # what's new: it proves the one real event consumer in this codebase
+    # (platform-spine/app/payment_consumer.py) actually works against a
+    # real Redis instance in the real docker-compose stack, not just in
+    # the unit tests (which call handle_payment_completed() directly,
+    # bypassing Redis entirely - see tests/test_payment_consumer.py).
+    #
+    # First: prove the message is really published to real Redis, before
+    # even checking the consumer's effect - if this subscription is set
+    # up AFTER payments-data already published (a race), a channel-based
+    # pubsub subscriber here would miss it silently and this step would
+    # give a false negative. Subscribing before triggering the publish
+    # avoids that ordering bug.
+    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe("payment.completed")
+    # Consume the subscribe confirmation message itself so the next
+    # get_message() call returns the real event, not this bookkeeping one.
+    pubsub.get_message(timeout=5)
+
+    confirm_resp = _expect(
+        _request(
+            "POST",
+            f"{PAYMENTS_URL}/v1/payments/{payment_id}/confirm",
+            headers=auth_header(admin_token),
+        ),
+        200,
+        "admin confirms payment (triggers events.payment_completed publish)",
+    )
+    if confirm_resp.json()["status"] != "completed":
+        raise StepFailed(
+            f"confirm returned status={confirm_resp.json()['status']}, expected 'completed'"
+        )
+    print(f"[ok] payment confirmed: {payment_id}, status=completed")
+
+    # Second: prove this script's own subscriber actually received the
+    # message over real Redis pub/sub - not platform-spine's internal
+    # state, a genuinely independent observation of the same channel.
+    published_message = pubsub.get_message(timeout=10)
+    if published_message is None or published_message.get("type") != "message":
+        raise StepFailed(
+            "payment.completed was not observed on real Redis pub/sub within 10s "
+            "after confirming the payment - either payments-data did not publish, "
+            "or this script's own subscription did not receive it"
+        )
+    pubsub.close()
+    print("[ok] payment.completed observed on real Redis pub/sub (publish side proven)")
+
+    # Third: prove the actual reaction - platform-spine's background
+    # subscriber thread (a separate process's thread, running in its own
+    # container) picks up that same message and advances the job. This is
+    # genuinely asynchronous from this script's perspective (the confirm
+    # call above already returned 200 before this happens), so poll
+    # rather than assume it's instantaneous.
+    deadline = time.monotonic() + EVENT_CONSUMER_TIMEOUT_SECONDS
+    final_status = None
+    while time.monotonic() < deadline:
+        job_check = _expect(
+            _request(
+                "GET",
+                f"{PLATFORM_SPINE_URL}/v1/jobs/{job_id}",
+                headers=auth_header(customer_token),
+            ),
+            200,
+            "poll job status after payment.completed",
+        )
+        final_status = job_check.json()["status"]
+        if final_status == "payment":
+            break
+        time.sleep(EVENT_CONSUMER_POLL_INTERVAL_SECONDS)
+
+    if final_status != "payment":
+        raise StepFailed(
+            f"job {job_id} did not advance to 'payment' within "
+            f"{EVENT_CONSUMER_TIMEOUT_SECONDS}s of payment.completed being published "
+            f"(last observed status: '{final_status}') - the message was confirmed "
+            f"delivered over Redis (previous step passed), so this points at "
+            f"platform-spine's payment_consumer.py subscriber thread specifically, "
+            f"not at publishing or delivery"
+        )
+    print(
+        f"[ok] job {job_id} advanced to 'payment' via the real payment_consumer.py "
+        f"subscriber thread reacting to a real Redis message - the one real event "
+        f"consumer in this codebase, proven end-to-end for the first time by this script"
     )
 
     print(f"\n=== All steps passed (run {RUN_ID}) ===")
