@@ -139,15 +139,17 @@ fallback is a fully correct MVP behavior on its own.
 
 ## Consequences
 
-- **Frontend work still owed:** `apps/web-app/src/dashboards/
-  ResourceOwnerDashboard.jsx` is still the placeholder from Milestone 3 -
-  registration/login already routes there (role selector + dashboard
-  mapping were already wired), but the actual screens (list own
-  resources, view/accept/reject incoming booking requests) are not yet
-  built. `ContractorDashboard.jsx` also needs a new flow: enter customer
-  address -> call `/v1/resources/match` -> pick a result -> `POST
-  /v1/bookings` -> see request status. Not done as part of this ADR's
-  backend pass; flagged as the immediate next task.
+- **Frontend work (update, post-merge):** both pieces flagged below as
+  owed have since been built and are no longer placeholders.
+  `ResourceOwnerDashboard.jsx` now has a "My Fleet" screen (list/add
+  resources, inline status changes) and a "Booking Requests" screen
+  (pending vs. past, accept/reject wired to the real endpoints).
+  `ContractorDashboard.jsx`'s `NearbyResourcesPanel` implements the flow
+  this ADR specified: search via `/v1/resources/match` using the job's
+  existing location, per-resource "Request" -> `POST /v1/bookings`, with
+  live status (`pending`/`accepted`/`rejected`) shown per resource and
+  the `RESOURCE_ALREADY_REQUESTED` / `RESOURCE_NOT_AVAILABLE` error codes
+  surfaced with specific copy rather than a generic message.
 - **Access-control surface genuinely widened**, as flagged before this
   ADR was written: a contractor now sees another party's resource's exact
   `hourly_rate` and `vehicle_type` via `/v1/resources/match`. This is the

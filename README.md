@@ -140,6 +140,14 @@ Register as any of the four roles from the registration screen. Each role routes
 
 > **No real screenshots or demo video exist yet.** `web-app`'s dashboards are wired to the real backend but not visually designed (see `apps/AGENTS.md`), and `apps/borewell-native` has a working login screen with placeholder dashboards beyond that (see that app's own `AGENTS.md` for the exact build order). Nothing here is polished enough yet to be worth screenshotting — this section is a placeholder with a real checklist, not filled with anything fabricated to look finished before it is.
 
+**Design mockups (target UI, not the running app):**
+
+| | |
+|---|---|
+| ![Full flow mockups](docs/assets/screenshots/borewell-ui-mockups-full.jpeg) | ![Mobile screens](docs/assets/screenshots/borewell-ui-screens-mobile.jpeg) |
+
+These are design references for Milestone 3 frontend implementation — see `docs/assets/README.md` for what each covers. Once the real apps are visually built out, this section gets replaced with actual screenshots per the checklist below.
+
 **To add real media once there's something worth showing:**
 
 1. Drop image files into `docs/assets/screenshots/` (create the folder) and video files or links into `docs/assets/demo/`.
