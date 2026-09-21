@@ -24,10 +24,6 @@
 #     contractor/resource_owner/admin JWTs (issued only by platform-spine -
 #     Architecture doc section 6), so all 4 need the SAME secret value,
 #     just no longer a hardcoded one committed to the repo.
-#   - web-app uses the production Dockerfile (nginx serving a built
-#     static bundle) instead of Dockerfile.dev (Vite dev server) - see
-#     apps/web-app/Dockerfile's header comment for why a dev server has
-#     no place serving real traffic.
 #   - restart: unless-stopped on every service - dev compose has no
 #     restart policy (you want a crashed dev container to stay stopped
 #     for you to inspect); production should recover from a container
@@ -43,6 +39,24 @@
 #     services/payments-data/app/gateway/razorpay_client.py's docstring
 #     for the full integration and its honest caveat about not having
 #     been checked against live Razorpay docs.
+#   - No web-app service. The real frontend (mobile + desktop) now lives
+#     in a separate repository and is integrated later, not built or
+#     served from here - see infra/gateway/README.md for exactly what
+#     that frontend repo needs to know to reach this backend (base URL,
+#     CORS entry, JWT contract), and docs/BACKEND_INTEGRATION.md for the
+#     full API surface. This file's only job now is exposing the 4
+#     backend services behind one stable entry point.
+#   - A traefik gateway service, genuinely wired via Docker labels on
+#     each backend service below (infra/gateway/traefik.yml, the static
+#     file this used to point at, is now unused - Docker-provider labels
+#     are the source of truth). This is Architecture doc section 4's
+#     "a single API Gateway is the only entry point frontends talk to"
+#     actually implemented, not just described. Each service's own port
+#     (8001-8004) stays exposed too, deliberately - a mobile app can't
+#     do the browser-relative path routing the gateway enables, and
+#     direct per-service access is genuinely useful while integrating a
+#     new frontend repo against this one for the first time. Nothing
+#     about adding the gateway removes or changes the direct-port path.
 
 services:
   postgres-platform-spine:
@@ -114,6 +128,40 @@ services:
       timeout: 5s
       retries: 5
 
+  gateway:
+    # Real single entry point (Architecture doc section 4), not the
+    # unused infra/gateway/traefik.yml static file - routing is defined
+    # entirely via Docker labels on each backend service below, which is
+    # Traefik's Docker provider reading this same compose file rather
+    # than a second config file that could drift from it.
+    image: docker.io/library/traefik:v3.1
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      # Only route services that opt in via traefik.enable=true (each
+      # backend service below) - without this, Traefik would try to
+      # route every container in the stack, including Postgres and
+      # Redis, which have no HTTP API to route to.
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      # TLS is deliberately not configured here - see
+      # docs/deployment/PRODUCTION.md's TLS section for the two real
+      # options (a managed cert via a DNS provider, or fronting this
+      # entire VM with a CDN/proxy like Cloudflare in front of port 80)
+      # and why neither is wired by default: both require a real domain
+      # to exist first, which a pilot VM may not have on day one. Until
+      # then this serves plain HTTP - acceptable for integration testing
+      # against a new frontend repo, not for real customer traffic.
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - platform-spine
+      - quotation
+      - resource-network
+      - payments-data
+
   platform-spine:
     build: ./services/platform-spine
     restart: unless-stopped
@@ -131,6 +179,13 @@ services:
       QUOTATION_SERVICE_URL: http://quotation:8000
     ports:
       - "8001:8000"
+    labels:
+      - "traefik.enable=true"
+      # PathPrefix, not StripPrefix - main.py's own routes already start
+      # with /v1/, and platform-spine has no other prefix to strip (this
+      # is genuinely the service's real path, not a gateway-only alias).
+      - "traefik.http.routers.platform-spine.rule=PathPrefix(`/v1/auth`) || PathPrefix(`/v1/jobs`)"
+      - "traefik.http.services.platform-spine.loadbalancer.server.port=8000"
 
   quotation:
     build: ./services/quotation
@@ -149,6 +204,10 @@ services:
       PLATFORM_SPINE_URL: http://platform-spine:8000
     ports:
       - "8002:8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.quotation.rule=PathPrefix(`/v1/pricing-rules`) || PathPrefix(`/v1/quotations`)"
+      - "traefik.http.services.quotation.loadbalancer.server.port=8000"
 
   resource-network:
     build: ./services/resource-network
@@ -165,6 +224,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
     ports:
       - "8003:8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.resource-network.rule=PathPrefix(`/v1/resources`) || PathPrefix(`/v1/bookings`) || PathPrefix(`/v1/service-areas`)"
+      - "traefik.http.services.resource-network.loadbalancer.server.port=8000"
 
   payments-data:
     build: ./services/payments-data
@@ -185,31 +248,19 @@ services:
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
     ports:
       - "8004:8000"
-
-  web-app:
-    build:
-      context: .
-      dockerfile: apps/web-app/Dockerfile
-      args:
-        # Build-time, not runtime - Vite bakes these into the static JS
-        # bundle when the image is built (see that Dockerfile's comment).
-        # Must be the PUBLIC URL customers/contractors will actually reach
-        # this VM at (e.g. https://app.yourdomain.in or the VM's public
-        # IP), not "localhost" - localhost only makes sense when the
-        # browser and the backend are on the same machine, which is true
-        # for local dev but not for a real deployed pilot.
-        VITE_PLATFORM_SPINE_URL: ${PUBLIC_URL}:8001
-        VITE_QUOTATION_URL: ${PUBLIC_URL}:8002
-        VITE_RESOURCE_NETWORK_URL: ${PUBLIC_URL}:8003
-        VITE_PAYMENTS_URL: ${PUBLIC_URL}:8004
-    restart: unless-stopped
-    depends_on:
-      - platform-spine
-      - quotation
-      - resource-network
-      - payments-data
-    ports:
-      - "80:80"
+    labels:
+      - "traefik.enable=true"
+      # /v1/payments/webhook is Razorpay's callback target, not a
+      # frontend call - included here because it shares the same
+      # /v1/payments prefix as every real payments-data route, not
+      # because a frontend hits this path directly. If you front this
+      # VM with a domain, point Razorpay's webhook config at
+      # https://<domain>/v1/payments/webhook (through this gateway, port
+      # 80/443) rather than the direct :8004 port - the direct port
+      # still works too, but the gateway path is the one that survives
+      # this VM's port layout changing later.
+      - "traefik.http.routers.payments-data.rule=PathPrefix(`/v1/payments`)"
+      - "traefik.http.services.payments-data.loadbalancer.server.port=8000"
 
 volumes:
   pg_platform_spine:

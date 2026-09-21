@@ -38,6 +38,8 @@ flowchart LR
 
 > **📖 Read the docs in this order:** `docs/rfc/0001-microservices-architecture.md` for the original architecture decision → `docs/adr/*` for every real change since then → `AGENTS.md` for how to work in this codebase without guessing. **The ADRs are the source of truth where they conflict with the original PRD/SRS** — most notably `ADR-0002` (one unified frontend, not three) and `ADR-0004` (a real multi-owner marketplace, not a single contractor's fleet — the "Zomato for drilling rigs" pivot).
 
+> **🔀 Frontend has moved.** The real mobile + desktop frontend is now being built in a separate repository and integrated against this backend, not developed here. `apps/web-app` (and the dead scaffolds `apps/customer-app`, `apps/contractor-app`, `apps/resource-owner-app`) remain in this repo as a **working reference implementation** — real, tested, calling real endpoints — useful to see an existing call site for any flow, but no longer the app users will actually run. **`docs/BACKEND_INTEGRATION.md` is the actual integration guide** for whoever is building that separate frontend: base URL, auth contract, error format, CORS, the Razorpay flow, all verified against the real running code, not just described.
+
 > 🤖 **AI coding agents: read `AGENTS.md` first**, then the nested `AGENTS.md` files under `services/*/`, `apps/*/`, and `packages/contracts/`. They exist specifically to stop hallucinated endpoints and unverified "done" claims.
 
 ---

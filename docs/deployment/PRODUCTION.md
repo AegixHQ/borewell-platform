@@ -13,27 +13,38 @@ this document is for the pilot VM only.
 
 ## 1. What you're deploying
 
-The same 4 backend services + frontend that run locally via `docker-compose.yml`,
-promoted to a single cloud VM via `docker-compose.prod.yml`. Same containers,
-same images, same code - the only things that change between dev and prod are
-secrets, exposed ports, and the frontend's build (static/nginx instead of a
-dev server). See `docker-compose.prod.yml`'s header comment for the itemized
-diff against the dev file.
+The 4 backend services that run locally via `docker-compose.yml`, promoted
+to a single cloud VM via `docker-compose.prod.yml`, plus a gateway
+(Traefik) that didn't exist in earlier versions of this file - see
+`docker-compose.prod.yml`'s header comment for the itemized diff against
+the dev file. **This repo no longer builds or deploys a frontend** - the
+real mobile + desktop frontend now lives in a separate repository and is
+integrated against these 4 services over HTTP (see
+`docs/BACKEND_INTEGRATION.md`, written for exactly that integration).
+`apps/web-app` still exists in this repo as a working reference client,
+but `docker-compose.prod.yml` does not build or run it - if you need it
+running for some reason (demoing the reference implementation, say),
+that's `docker-compose.yml` (dev), not this file.
 
 ## 2. Prerequisites
 
 - A VM (or equivalent) with Docker + Docker Compose v2 installed. Any
   mainstream Linux distro works; nothing here is distro-specific.
 - Minimum realistic sizing for a pilot: 2 vCPU / 4GB RAM. This runs 4
-  Postgres instances, Redis, 4 FastAPI services, and an nginx-served
-  frontend - not heavy individually, but real headroom matters more than
-  the absolute minimum that technically boots.
+  Postgres instances, Redis, 4 FastAPI services, and the Traefik gateway -
+  not heavy individually, but real headroom matters more than the
+  absolute minimum that technically boots.
 - A domain name pointed at the VM's IP, OR just the VM's public IP as an
   interim step (see `.env.prod.example`'s `PUBLIC_URL` comment - HTTPS is
   step 7 below, not required to get a first deploy running).
-- Port 80 (and 443 once TLS is set up) reachable from the internet; ports
-  8001-8004 reachable at minimum from wherever the frontend's browser
-  traffic originates (see the CORS/URL note in step 4 below).
+- Port 80 (and 443 once TLS is set up, step 7) reachable from the
+  internet - this is the gateway's port, and per
+  `docs/BACKEND_INTEGRATION.md` section 2, the one base URL whoever's
+  building the separate frontend repo should be pointed at. Ports
+  8001-8004 (the 4 services directly) also need to be reachable from
+  wherever that frontend's traffic originates, since the gateway doesn't
+  replace direct access, it supplements it (see that same doc section for
+  why both exist).
 
 ## 3. First-time server setup
 
@@ -58,15 +69,21 @@ exactly how to generate each value (`openssl rand -base64 ...`) and why each
 one exists - read it, don't skip past the comments.
 
 **The one thing worth getting right the first time:** `PUBLIC_URL` and
-`ALLOWED_ORIGINS` must both reflect where this VM is actually reachable at -
-not `localhost`. If you deploy with the wrong value here, the symptom is
-confusing: the frontend loads, but every API call from the browser fails
-with a CORS error or connects to nothing, because the frontend's JavaScript
-was built with the wrong backend URLs baked in (Vite bakes `VITE_*_URL` at
-*build* time, not read at container start - see
-`apps/web-app/Dockerfile`'s comment). If you get this wrong, you must
-rebuild the `web-app` image (`docker compose -f docker-compose.prod.yml
---env-file .env.prod up -d --build web-app`), not just restart it.
+`ALLOWED_ORIGINS` must both reflect where this VM is actually reachable at
+- not `localhost`. `ALLOWED_ORIGINS` needs the real deployed origin of
+whatever frontend is calling this backend from a browser context (the
+separate frontend repo's deployed URL - native mobile isn't affected by
+CORS at all, see `docs/BACKEND_INTEGRATION.md` section 5). Get this wrong
+and the symptom is confusing from the frontend side: requests either get
+a CORS error in the browser console or fail to connect, while this
+backend's own logs and health checks look completely fine - because
+CORS is enforced by the browser, not visible here at all. Unlike an
+earlier version of this stack, there's no frontend build in this repo to
+rebuild when this changes - `ALLOWED_ORIGINS` is read from the
+environment at container start (not baked in at build time anywhere in
+this repo anymore), so `docker compose -f docker-compose.prod.yml
+--env-file .env.prod up -d` (no `--build` needed) is enough after editing
+it.
 
 ### Razorpay setup (one-time, in the Razorpay Dashboard)
 
@@ -110,7 +127,9 @@ money. See that file's own docstring for the same caveat in more detail.
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
-This builds all 5 images (4 backend + frontend) and starts everything.
+This builds the 4 backend images (Traefik's image is pulled, not built -
+it's the stock upstream image, no Dockerfile of its own in this repo) and
+starts everything, including the gateway.
 First run will take a few minutes (Postgres image pulls, Python/Node
 dependency installs inside each build). Subsequent deploys are faster -
 Docker layer caching means only what actually changed gets rebuilt.
@@ -129,7 +148,16 @@ curl http://<your-domain-or-ip>:8001/healthz   # platform-spine
 curl http://<your-domain-or-ip>:8002/healthz   # quotation
 curl http://<your-domain-or-ip>:8003/healthz   # resource-network
 curl http://<your-domain-or-ip>:8004/healthz   # payments-data
-curl http://<your-domain-or-ip>/               # web-app (should return the HTML shell)
+curl http://<your-domain-or-ip>/v1/jobs        # through the gateway - expect
+                                                # a 401 (no token), not a
+                                                # connection failure or 404;
+                                                # a 401 means the gateway
+                                                # correctly routed the
+                                                # request to platform-spine,
+                                                # which then correctly
+                                                # rejected it for having no
+                                                # Authorization header - that
+                                                # IS the gateway working
 ```
 
 All 4 backend `/healthz` checks return `{"status": "ok"}` immediately -
@@ -167,18 +195,26 @@ for port 8004, or whatever port a reverse proxy in front of it uses).
 ## 7. HTTPS (do this before real customer data touches this VM)
 
 Not automated here - deliberately, since certificate/domain setup is
-specific to your registrar and hosting provider. The standard, low-effort
-approach for a single VM: [Caddy](https://caddyserver.com/) or
-`certbot` + nginx in front of the `web-app` container, terminating TLS
-and reverse-proxying to port 80. Once that's in place:
-- Update `PUBLIC_URL` in `.env.prod` to the `https://` URL.
-- Rebuild `web-app` (see the note in step 4 - build-time env, not runtime).
-- Consider also fronting ports 8001-8004 the same way, rather than
-  leaving raw HTTP API ports exposed once a proper reverse proxy exists -
-  this is the natural point where `infra/gateway/` (currently a
-  documented placeholder - see `apps/AGENTS.md` and
-  `apps/shared-ui/src/platform.js`'s "KNOWN DEVIATION" comment) stops
-  being deferred and becomes worth actually building.
+specific to your registrar and hosting provider. The gateway
+(`docker-compose.prod.yml`'s `gateway` service, Traefik) is where this
+belongs once you're ready - Traefik has built-in ACME/Let's Encrypt
+support, so this is a config addition to the existing `gateway` service
+(a `certificatesResolvers` block plus a `websecure` entrypoint on 443),
+not a new piece of infrastructure. The alternative - fronting the whole
+VM with a CDN/proxy like Cloudflare that terminates TLS before traffic
+reaches port 80 - also works and requires no gateway config changes at
+all, just a DNS/proxy setup outside this repo. `docs/BACKEND_INTEGRATION.md`
+section 7 has the same two options from the frontend-integrator's side,
+if you need to coordinate this with whoever's building the separate
+frontend repo. Once either is in place:
+- Update `PUBLIC_URL` in `.env.prod` to the `https://` URL - this is read
+  at container start by whichever services use it (see
+  `.env.prod.example`'s own comment on that var for exactly which ones),
+  not baked into any build, so a restart (not a rebuild) picks it up.
+- The 4 direct backend ports (8001-8004) stay HTTP-only unless you
+  explicitly front each of them too - most setups only need the gateway's
+  port TLS-terminated, since that's the one meant to be the actual public
+  entry point (see `docs/BACKEND_INTEGRATION.md` section 2).
 
 ## 8. Redeploying (after a code change)
 

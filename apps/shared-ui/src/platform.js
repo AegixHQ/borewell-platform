@@ -29,19 +29,21 @@
  */
 
 // KNOWN DEVIATION from this folder's own AGENTS.md ("Never call a service
-// directly - always through the gateway"): infra/gateway/traefik.yml is a
-// placeholder (its own comment: "Fill in once a real gateway is chosen"),
-// has no upstream service targets defined, and isn't wired into
-// docker-compose.yml at all - there's currently nothing listening to
-// route through. App.jsx's login/register calls already called
-// platform-spine directly before any of this file existed; these three
-// constants just centralize that same pattern (previously copy-pasted per
-// dashboard file) rather than inventing a new one. Building the frontend
-// against a gateway that doesn't run would produce something that
-// doesn't work at all, which is worse than a documented shortcut.
-// Swap these three fetches for one gateway base URL once infra/gateway/
-// is real - every call in this file already goes through request(), so
-// that swap is a one-line change per constant, not a rewrite.
+// directly - always through the gateway") - status as of the gateway
+// being wired into docker-compose.prod.yml (Traefik, Docker-label
+// routing, verified against a real running instance - see
+// docs/BACKEND_INTEGRATION.md section 2): still accurate for DEV.
+// docker-compose.yml (dev) has no gateway service at all, so these three
+// direct-service URLs are still the only thing to call against locally -
+// this deviation is real and current for `make up` / local development.
+// For PROD, a gateway now genuinely runs (docker-compose.prod.yml's
+// `gateway` service) and these calls COULD be rewritten to go through
+// one base URL instead - not done here because this app (apps/web-app)
+// is being superseded by a separate frontend repo (see the note at the
+// top of this repo's README), so investing in that swap here has no
+// payoff. If you're building the new frontend elsewhere, use the
+// gateway's single base URL from the start rather than adopting this
+// direct-multi-port pattern - see docs/BACKEND_INTEGRATION.md.
 export const PLATFORM_SPINE_URL =
   import.meta.env.VITE_PLATFORM_SPINE_URL || "http://localhost:8001";
 export const QUOTATION_URL =
