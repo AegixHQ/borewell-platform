@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 import uuid
 from decimal import Decimal
 
@@ -15,7 +17,11 @@ from app.deps import get_current_claims, require_role
 from app.estimation.engine import estimate_depth
 from app.jobs.job_client import JobNotFound, JobServiceError, fetch_job
 from app.location.location_client import lookup_service_area
+from app.logging_config import configure_logging
 from app.pricing.engine import calculate_quotation, to_money
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="quotation",
@@ -53,8 +59,20 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 @app.middleware("http")
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
+    start = time.monotonic()
     response = await call_next(request)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    logger.log(
+        level,
+        "request.completed method=%s path=%s status=%s duration_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        extra={"trace_id": request.state.trace_id},
+    )
     return response
 
 

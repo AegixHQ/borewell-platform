@@ -157,10 +157,20 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
-      - platform-spine
-      - quotation
-      - resource-network
-      - payments-data
+      # condition: service_healthy, not just service_started - now that
+      # each backend below has a real healthcheck (added alongside this),
+      # Traefik waits for /healthz to actually respond before starting to
+      # route to it, rather than potentially routing to a container
+      # that's still running `alembic upgrade head` (see each service's
+      # Dockerfile CMD) and not yet serving requests.
+      platform-spine:
+        condition: service_healthy
+      quotation:
+        condition: service_healthy
+      resource-network:
+        condition: service_healthy
+      payments-data:
+        condition: service_healthy
 
   platform-spine:
     build: ./services/platform-spine
@@ -179,6 +189,18 @@ services:
       QUOTATION_SERVICE_URL: http://quotation:8000
     ports:
       - "8001:8000"
+    healthcheck:
+      # Python, not curl - python:3.11-slim (this service's base image,
+      # see services/platform-spine/Dockerfile) doesn't ship curl/wget,
+      # and installing one just for this would bloat the image for a
+      # single healthcheck call. Verified for real (see
+      # infra/monitoring/README.md) that this exits 0 against a real
+      # responding server and non-zero when nothing's listening.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
       # PathPrefix, not StripPrefix - main.py's own routes already start
@@ -204,6 +226,12 @@ services:
       PLATFORM_SPINE_URL: http://platform-spine:8000
     ports:
       - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.quotation.rule=PathPrefix(`/v1/pricing-rules`) || PathPrefix(`/v1/quotations`)"
@@ -224,6 +252,12 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
     ports:
       - "8003:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.resource-network.rule=PathPrefix(`/v1/resources`) || PathPrefix(`/v1/bookings`) || PathPrefix(`/v1/service-areas`)"
@@ -248,6 +282,12 @@ services:
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
     ports:
       - "8004:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
       # /v1/payments/webhook is Razorpay's callback target, not a

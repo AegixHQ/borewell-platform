@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -13,6 +15,10 @@ from app import models, schemas
 from app.database import get_db
 from app.deps import require_role
 from app.geo import haversine_km
+from app.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="resource-network",
@@ -48,8 +54,20 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 @app.middleware("http")
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
+    start = time.monotonic()
     response = await call_next(request)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    logger.log(
+        level,
+        "request.completed method=%s path=%s status=%s duration_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        extra={"trace_id": request.state.trace_id},
+    )
     return response
 
 

@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from decimal import ROUND_HALF_UP, Decimal
@@ -15,7 +17,11 @@ from app import events, models, payment_consumer, quotation_client, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.job_state_machine import InvalidTransitionError, validate_transition
+from app.logging_config import configure_logging
 from app.security import create_access_token, hash_password, verify_password
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -68,8 +74,28 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 @app.middleware("http")
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
+    start = time.monotonic()
     response = await call_next(request)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
+    # One line per request, INFO for anything under 500 (expected 4xx
+    # included - a customer hitting a validation error isn't a service
+    # problem), WARNING for 5xx (this service's own bug, worth a human
+    # noticing at a glance while scrolling raw logs). extra={} is how
+    # trace_id reaches JsonFormatter (see logging_config.py) without
+    # changing every existing logger.info("...", x) call site's %s-style
+    # signature elsewhere in this file - this is the one new call site,
+    # not a rewrite of the rest.
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    logger.log(
+        level,
+        "request.completed method=%s path=%s status=%s duration_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        extra={"trace_id": request.state.trace_id},
+    )
     return response
 
 

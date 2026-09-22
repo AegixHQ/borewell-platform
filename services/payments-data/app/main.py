@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -20,12 +22,16 @@ from app.gateway.razorpay_client import (
     get_razorpay_config,
     verify_webhook_signature,
 )
+from app.logging_config import configure_logging
 from app.payments.quotation_client import (
     QuotationAccessDenied,
     QuotationNotFound,
     QuotationServiceError,
     fetch_quotation,
 )
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="payments-data",
@@ -57,8 +63,26 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 @app.middleware("http")
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
+    start = time.monotonic()
     response = await call_next(request)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
+    # Deliberately never logs the request or response BODY - only method,
+    # path, status, duration. This is the one service where that
+    # restraint actually matters: /v1/payments and /v1/payments/webhook
+    # bodies carry amounts and Razorpay signatures. Anyone extending this
+    # line to add request/response body logging for debugging should
+    # route that through a redaction step first, not add it here.
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    logger.log(
+        level,
+        "request.completed method=%s path=%s status=%s duration_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        extra={"trace_id": request.state.trace_id},
+    )
     return response
 
 
