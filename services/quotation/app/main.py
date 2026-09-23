@@ -7,6 +7,7 @@ from decimal import Decimal
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
+app.add_middleware(GZipMiddleware)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app -
 # same discipline as platform-spine.

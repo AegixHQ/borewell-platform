@@ -81,6 +81,17 @@ paths:
           description: Only customers may create jobs
     get:
       summary: List jobs visible to the current user (own jobs for customers, all jobs for contractor/admin)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Max rows to return. Omit for the full list (unchanged default behavior).
+          schema: { type: integer, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          description: Rows to skip. Ignored unless limit is also set.
+          schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
           description: Job list

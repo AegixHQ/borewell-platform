@@ -6,6 +6,7 @@ import uuid
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +52,14 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
+# Checked GZipMiddleware's own source before adding this here specifically:
+# it only inspects incoming Accept-Encoding to decide whether to compress
+# the OUTGOING response; the incoming `receive` callable (what
+# razorpay_webhook reads the raw body from for HMAC signature
+# verification - see that endpoint's own docstring) passes through
+# completely untouched. No interaction with the one endpoint in this
+# service where request-body integrity actually matters.
+app.add_middleware(GZipMiddleware)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 

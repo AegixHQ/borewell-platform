@@ -266,7 +266,21 @@ drilling → progress → completion → payment → service_history
 
 ---
 
-## 9. Where to look for anything not covered here
+## 9. Pagination (optional, additive)
+
+`GET /v1/jobs`, `GET /v1/resources`, and `GET /v1/bookings` accept optional
+`?limit=N&offset=N` query params (`limit`: 1-200, `offset`: ≥0, both
+optional). **Omit them and you get exactly what you got before this
+existed** — the full list, unpaginated — so there's no obligation to use
+this on day one. Reach for it once a real contractor's job history or a
+real resource owner's booking queue gets large enough that fetching
+everything on every screen load stops making sense; verified server-side
+that pages don't overlap and every row is returned exactly once across
+pages.
+
+---
+
+## 10. Where to look for anything not covered here
 
 This doc covers the integration surface, not the full API reference. For
 exact request/response shapes of a specific endpoint not detailed above:

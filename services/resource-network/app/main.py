@@ -4,9 +4,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -38,6 +39,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
+app.add_middleware(GZipMiddleware)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # Inventory CRUD only in MVP - matching engine is Phase 1 (see app/matching/).
@@ -174,12 +176,15 @@ def create_resource(
 @app.get("/v1/resources", response_model=list[schemas.ResourceResponse])
 def list_resources(
     status_filter: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("resource_owner")),
 ):
     """A resource_owner's own fleet, for their dashboard. This is NOT the
     marketplace search - see POST /v1/resources/match for that (cross-
-    owner, contractor-facing)."""
+    owner, contractor-facing). limit/offset are optional and additive -
+    omitting them returns everything, exactly as before this was added."""
     query = db.query(models.Resource).filter(models.Resource.owner_id == claims["sub"])
     if status_filter is not None:
         if status_filter not in models.RESOURCE_STATUSES:
@@ -191,8 +196,10 @@ def list_resources(
                 },
             )
         query = query.filter(models.Resource.status == status_filter)
-    ordered = query.order_by(models.Resource.created_at.desc()).all()
-    return [_resource_to_response(r) for r in ordered]
+    query = query.order_by(models.Resource.created_at.desc())
+    if limit is not None:
+        query = query.offset(offset).limit(limit)
+    return [_resource_to_response(r) for r in query.all()]
 
 
 @app.get("/v1/resources/{resource_id}", response_model=schemas.ResourceResponse)
@@ -358,13 +365,16 @@ def create_booking_request(
 @app.get("/v1/bookings", response_model=list[schemas.BookingRequestResponse])
 def list_bookings(
     status_filter: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("resource_owner", "contractor")),
 ):
     """Role-scoped: a resource_owner sees requests ON their resources;
     a contractor sees requests THEY made. Never both, regardless of role -
     the query filter is chosen by claims["role"], not a parameter the
-    caller controls."""
+    caller controls. limit/offset optional and additive, same as
+    list_resources above - omitted means everything, unchanged."""
     if claims["role"] == "resource_owner":
         query = db.query(models.BookingRequest).filter(
             models.BookingRequest.owner_id == claims["sub"]
@@ -383,8 +393,10 @@ def list_bookings(
                 },
             )
         query = query.filter(models.BookingRequest.status == status_filter)
-    ordered = query.order_by(models.BookingRequest.created_at.desc()).all()
-    return [_booking_to_response(b) for b in ordered]
+    query = query.order_by(models.BookingRequest.created_at.desc())
+    if limit is not None:
+        query = query.offset(offset).limit(limit)
+    return [_booking_to_response(b) for b in query.all()]
 
 
 def _respond_to_booking(

@@ -5,9 +5,10 @@ import uuid
 from contextlib import asynccontextmanager
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -56,6 +57,13 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
+# minimum_size=500 (Starlette's own default, not overridden) - below that,
+# gzip's own overhead can exceed what it saves, so small responses (most
+# error bodies, a single-resource GET) pass through uncompressed, which is
+# correct. PRD section 8: "customer request flow works over basic mobile
+# data" - this is a real, free win for that constraint on the larger
+# payloads (job lists, quotations with line items) that actually benefit.
+app.add_middleware(GZipMiddleware)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # The app deliberately does NOT call Base.metadata.create_all() - relying on
@@ -219,12 +227,35 @@ def create_job(
 
 
 @app.get("/v1/jobs", response_model=list[schemas.JobResponse])
-def list_jobs(db: Session = Depends(get_db), claims: dict = Depends(get_current_claims)):
+def list_jobs(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=200,
+        description="Max rows to return. Omit for the full list (today's "
+        "behavior, unchanged) - this is additive pagination, not a "
+        "breaking change to the existing contract. 200 is a ceiling, "
+        "not a target: pass a smaller limit for a real paged UI.",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Rows to skip, for the next page. Ignored unless "
+        "limit is also set - offset alone with no limit would still "
+        "return everything after that point, which is rarely what a "
+        "caller wants and silently hides the missing limit as a bug.",
+    ),
+):
     query = db.query(models.Job)
     if claims["role"] == "customer":
         query = query.filter(models.Job.customer_id == claims["sub"])
     # Contractor/admin see all jobs - single-contractor MVP assumption (PRD section 8).
-    return [_job_to_response(j) for j in query.order_by(models.Job.created_at.desc()).all()]
+    query = query.order_by(models.Job.created_at.desc())
+    if limit is not None:
+        query = query.offset(offset).limit(limit)
+    return [_job_to_response(j) for j in query.all()]
 
 
 @app.get("/v1/jobs/{job_id}", response_model=schemas.JobResponse)
