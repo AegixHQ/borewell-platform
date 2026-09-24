@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -40,6 +41,11 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
 )
 app.add_middleware(GZipMiddleware)
+
+# include_in_schema=False + IGNORED_PATHS entry in
+# tools/contract-check/check_contract.py - see platform-spine/app/main.py's
+# identical block for the full rationale, unchanged here.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # Inventory CRUD only in MVP - matching engine is Phase 1 (see app/matching/).

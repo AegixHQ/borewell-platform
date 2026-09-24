@@ -30,8 +30,14 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 # Routes FastAPI adds automatically, or that are infra (not business
-# contract) - never compared against the OpenAPI spec.
-IGNORED_PATHS = {"/healthz", "/readyz", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
+# contract) - never compared against the OpenAPI spec. /metrics added
+# alongside /healthz and /readyz for the same reason: Prometheus scrapes
+# it from inside the Docker network (see docker-compose.prod.yml's
+# prometheus service), no frontend or business caller ever hits it, and
+# it's identical across all 4 services (prometheus-fastapi-instrumentator
+# wired the same way everywhere) so it doesn't belong in any one
+# service's business contract.
+IGNORED_PATHS = {"/healthz", "/readyz", "/metrics", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
 
 
 def load_contract_paths(service: str) -> set:

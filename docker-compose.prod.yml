@@ -302,8 +302,66 @@ services:
       - "traefik.http.routers.payments-data.rule=PathPrefix(`/v1/payments`)"
       - "traefik.http.services.payments-data.loadbalancer.server.port=8000"
 
+  prometheus:
+    # Scrapes /metrics from all 4 backend services (each exposes it via
+    # prometheus-fastapi-instrumentator - see each service's main.py,
+    # right after its GZipMiddleware registration). Config lives in
+    # infra/monitoring/prometheus.yml, validated with the real promtool
+    # binary before being added here (Prometheus's own config-check
+    # tool), not just hand-written and assumed correct.
+    image: docker.io/prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      platform-spine:
+        condition: service_healthy
+      quotation:
+        condition: service_healthy
+      resource-network:
+        condition: service_healthy
+      payments-data:
+        condition: service_healthy
+    # No host port exposed by default - Grafana (below) is the intended
+    # way to look at this data. Prometheus's own UI is still useful for
+    # raw PromQL debugging; uncomment to reach it directly at
+    # http://<vm>:9090 if you want that without going through Grafana.
+    # ports:
+    #   - "9090:9090"
+
+  grafana:
+    # Provisioned, not clicked-through: infra/monitoring/grafana/provisioning/
+    # wires the Prometheus datasource and auto-loads
+    # infra/monitoring/grafana/dashboards/borewell-overview.json on
+    # first boot - opening Grafana for the first time already shows
+    # real panels (service up/down, request rate, error rate, p95
+    # latency, status-code breakdown), not an empty default screen
+    # asking you to configure a datasource by hand.
+    image: docker.io/grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      # CHANGE_ME here too, same discipline as every other secret in
+      # this file - Grafana's own login, not reused from anything else.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      # Anonymous viewing off by default - this dashboard shows request
+      # volume and error rates, not customer data directly, but there's
+      # no reason to leave it unauthenticated by default; flip this in
+      # .env.prod if you genuinely want a public status-page-style view.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   pg_platform_spine:
   pg_quotation:
   pg_resource_network:
   pg_payments_data:
+  prometheus_data:
+  grafana_data:

@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -60,6 +61,14 @@ app.add_middleware(
 # completely untouched. No interaction with the one endpoint in this
 # service where request-body integrity actually matters.
 app.add_middleware(GZipMiddleware)
+
+# include_in_schema=False + IGNORED_PATHS entry in
+# tools/contract-check/check_contract.py - see platform-spine/app/main.py's
+# identical block for the full rationale, unchanged here. Same
+# no-request-body-touched guarantee as the GZipMiddleware note above
+# applies here too, checked for the same reason: this instrumentator only
+# reads response status/timing, never the request or response body.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 

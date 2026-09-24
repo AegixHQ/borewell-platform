@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -64,6 +65,17 @@ app.add_middleware(
 # data" - this is a real, free win for that constraint on the larger
 # payloads (job lists, quotations with line items) that actually benefit.
 app.add_middleware(GZipMiddleware)
+
+# include_in_schema=False - this endpoint is deliberately NOT in
+# packages/contracts/openapi/platform-spine.yaml. It's not part of this
+# service's business API (no auth, no role check, not something a
+# frontend ever calls) - it's operational surface for Prometheus only,
+# scraped from inside the Docker network (see docker-compose.prod.yml's
+# prometheus service). Putting it in the contract would make
+# tools/contract-check/ flag every other service's identical /metrics
+# endpoint as "undeclared" forever, for an endpoint that was never meant
+# to be declared business API in the first place.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # The app deliberately does NOT call Base.metadata.create_all() - relying on

@@ -1,0 +1,23 @@
+apiVersion: 1
+
+providers:
+  - name: "Borewell Platform"
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Grafana auto-loads any .json dashboard file dropped in this
+      # folder on container start, and re-reads it every 30s
+      # (updateIntervalSeconds above). This is a container-internal path,
+      # distinct from where THIS provider config file itself lives
+      # (.../provisioning/dashboards/dashboards.yml) - Grafana would try
+      # to parse dashboards.yml as a dashboard JSON and fail if this path
+      # pointed at the same folder as itself. docker-compose.prod.yml's
+      # grafana service mounts infra/monitoring/grafana/dashboards/ (a
+      # separate folder in this repo) onto this exact container path -
+      # editing the JSON file there and restarting (or waiting 30s)
+      # updates the dashboard without touching Grafana's UI or database.
+      path: /etc/grafana/provisioning/dashboards-json

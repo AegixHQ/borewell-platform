@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.6",
     "redis>=5.0",
     "pyjwt>=2.8",
+    "prometheus-fastapi-instrumentator>=8.0",
 ]
 
 [project.optional-dependencies]

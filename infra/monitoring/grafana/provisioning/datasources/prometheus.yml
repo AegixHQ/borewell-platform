@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # "prometheus" resolves via Docker's internal DNS - same service-name
+    # pattern every other service in docker-compose.prod.yml already
+    # uses to reach each other (e.g. QUOTATION_SERVICE_URL:
+    # http://quotation:8000). Grafana and Prometheus are on the same
+    # Docker network, so no port needs exposing to the host for this to
+    # work - only Grafana's own UI port needs to be reachable by you.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Container name : internal port (8000 - every service's own container
+  # port, not the host-mapped 8001-8004 from docker-compose.prod.yml;
+  # Prometheus runs inside the same Docker network and resolves service
+  # names directly, same as every service already does to call each
+  # other - see e.g. QUOTATION_SERVICE_URL: http://quotation:8000 in that
+  # same compose file for the existing precedent this follows).
+  - job_name: platform-spine
+    static_configs:
+      - targets: ["platform-spine:8000"]
+
+  - job_name: quotation
+    static_configs:
+      - targets: ["quotation:8000"]
+
+  - job_name: resource-network
+    static_configs:
+      - targets: ["resource-network:8000"]
+
+  - job_name: payments-data
+    static_configs:
+      - targets: ["payments-data:8000"]
