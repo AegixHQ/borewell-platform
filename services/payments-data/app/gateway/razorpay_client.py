@@ -6,18 +6,25 @@ codebase (see e.g. app/payments/quotation_client.py, quotation service's
 job_client.py) rather than introducing a new dependency pattern for one
 integration.
 
-HONEST CAVEAT (read before wiring real keys): this was written without
-live access to Razorpay's current API documentation - no internet access
-was available in the environment that built it. What's here follows
-Razorpay's long-stable, well-documented Orders API request/response shape
-and the standard HMAC-SHA256 webhook signature scheme, both of which have
-been unchanged for years and are exactly what every razorpay-python SDK
-release still implements under the hood - but this should be checked
-against https://razorpay.com/docs/api/orders/ and
-https://razorpay.com/docs/webhooks/validate-test/ before this ever
-touches a real payment, not assumed correct from memory. If anything below
-doesn't match current Razorpay docs, trust the docs and fix this file, not
-the other way around.
+VERIFIED AGAINST LIVE RAZORPAY DOCS (Sep 2026): checked directly against
+https://razorpay.com/docs/api/orders/ and
+https://razorpay.com/docs/webhooks/validate-test/ - Create Order's
+request shape (amount in paise as integer, currency, receipt ≤40 chars,
+notes) and the webhook signature scheme (HMAC-SHA256 over the raw body,
+X-Razorpay-Signature header, constant-time comparison) both match
+exactly what's implemented below. This was previously written without
+live doc access and carried a caveat to that effect; that caveat is now
+resolved. The one thing the docs surfaced that wasn't here before: an
+x-razorpay-event-id header Razorpay recommends logging for audit/
+duplicate-delivery visibility - added below (see razorpay_webhook in
+main.py). This does NOT change the idempotency guarantee itself: this
+endpoint was already idempotent by checking the payment's own DB status
+before acting (see razorpay_webhook's docstring in main.py), which is
+strictly stronger than event-ID dedup alone - status-based idempotency
+also correctly rejects a late/out-of-order "failed" webhook arriving
+after a "completed" one, which event-ID dedup by itself would not catch.
+The header is logged for observability, not because the idempotency
+logic depended on it.
 
 Two real API keys are needed to actually use this, both from the Razorpay
 Dashboard (Settings -> API Keys for the first two, Settings -> Webhooks

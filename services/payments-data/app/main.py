@@ -419,10 +419,10 @@ def fail_payment(
 @app.post("/v1/payments/webhook")
 async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     """Real, primary payment-confirmation path - see app/gateway/
-    razorpay_client.py for the signature-verification logic and its
-    HONEST CAVEAT (built without live access to current Razorpay docs;
-    verify the payload shape below against https://razorpay.com/docs/webhooks/
-    before this goes live, not just this comment).
+    razorpay_client.py for the signature-verification logic. Verified
+    against live Razorpay docs (https://razorpay.com/docs/webhooks/) -
+    payload shape below (payload.payment.entity.{order_id,id}) matches
+    the current payment.captured/payment.failed event schema exactly.
 
     Authenticates via X-Razorpay-Signature (HMAC-SHA256, RAZORPAY_WEBHOOK_SECRET),
     NOT an app JWT - Razorpay's server calls this directly and has no
@@ -434,10 +434,21 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     delivery, so the same event can arrive more than once. Re-processing
     an event for a payment that's already in its target status is a
     no-op, not an error and not a second events.payment_completed fire -
-    see the "already in target status" checks below.
+    see the "already in target status" checks below. This checks the
+    payment's own DB status rather than deduping on Razorpay's
+    x-razorpay-event-id header (logged below for audit/observability,
+    but not load-bearing for correctness) - status-based idempotency is
+    strictly stronger, since it also correctly rejects a late/
+    out-of-order "failed" webhook arriving after a "completed" one,
+    which event-ID dedup alone would not catch.
     """
     raw_body = await request.body()
     signature = request.headers.get("X-Razorpay-Signature")
+    # Logged for audit trail / duplicate-delivery visibility only - see
+    # this function's docstring for why correctness doesn't depend on
+    # it. A missing header (older Razorpay account/API version, or a
+    # malformed request that got this far) is not itself an error here.
+    event_id = request.headers.get("x-razorpay-event-id")
 
     try:
         verify_webhook_signature(raw_body, signature)
@@ -494,6 +505,19 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
         db.query(models.Payment)
         .filter(models.Payment.razorpay_order_id == razorpay_order_id)
         .first()
+    )
+    # Audit-trail line - every webhook Razorpay sends that gets this far
+    # (valid signature, parseable payload) is logged once here regardless
+    # of what happens next, with the event_id captured above. This is
+    # what lets you later answer "did Razorpay send this event more than
+    # once, and when" from logs alone - see this endpoint's own
+    # docstring for why correctness doesn't depend on this value.
+    logger.info(
+        "razorpay.webhook.received event=%s event_id=%s razorpay_order_id=%s payment_id=%s",
+        event,
+        event_id,
+        razorpay_order_id,
+        payment.id if payment else None,
     )
     if not payment:
         # A webhook for an order_id we have no record of - could be a
