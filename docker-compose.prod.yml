@@ -187,6 +187,15 @@ services:
       JWT_EXPIRY_MINUTES: "60"
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       QUOTATION_SERVICE_URL: http://quotation:8000
+      # Optional. Set BOTH to create the first admin on next start, then
+      # remove the password from .env.prod (see app/bootstrap.py).
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Auth rate limits are per client IP. Leave forwarded-header trust OFF
+      # while clients can reach :8001 directly (a direct caller can forge
+      # X-Forwarded-For). Turn it on only when ALL traffic comes through
+      # Traefik - otherwise every user shares the gateway's IP.
+      RATE_LIMIT_TRUST_FORWARDED_FOR: ${RATE_LIMIT_TRUST_FORWARDED_FOR:-0}
     ports:
       - "8001:8000"
     healthcheck:

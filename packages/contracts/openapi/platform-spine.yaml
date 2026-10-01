@@ -17,7 +17,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
                 phone: { type: string }
-                role: { type: string, enum: [customer, contractor, admin, resource_owner], default: customer }
+                role: { type: string, enum: [customer, contractor, resource_owner], default: customer, description: "admin cannot be self-registered; it is created out-of-band (services/platform-spine/app/bootstrap.py)" }
       responses:
         '201':
           description: Registered
@@ -30,6 +30,10 @@ paths:
                   role: { type: string, enum: [customer, contractor, admin, resource_owner] }
         '409':
           description: Email already registered
+        '422':
+          description: Validation error (including a role that cannot be self-registered, e.g. admin)
+        '429':
+          description: Too many registration attempts from this client; see Retry-After
   /v1/auth/login:
     post:
       summary: Authenticate and receive a JWT
@@ -54,6 +58,8 @@ paths:
                   role: { type: string, enum: [customer, contractor, admin, resource_owner] }
         '401':
           description: Invalid credentials
+        '429':
+          description: Too many login attempts from this client; see Retry-After
   /v1/jobs:
     post:
       summary: Create a new job (lead). Customer role only.

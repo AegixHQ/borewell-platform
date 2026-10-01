@@ -93,6 +93,13 @@ services:
       JWT_EXPIRY_MINUTES: "60"
       ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
       QUOTATION_SERVICE_URL: http://quotation:8000
+      # Dev/CI only. Public registration cannot create an admin, so the
+      # integration test logs in as this bootstrapped one (app/bootstrap.py).
+      BOOTSTRAP_ADMIN_EMAIL: admin@borewell.local
+      BOOTSTRAP_ADMIN_PASSWORD: dev-only-admin-password
+      # Effectively off locally: repeated test runs from one IP must not 429.
+      RATE_LIMIT_LOGIN: 1000/minute
+      RATE_LIMIT_REGISTER: 1000/hour
     ports:
       - "8001:8000"
 

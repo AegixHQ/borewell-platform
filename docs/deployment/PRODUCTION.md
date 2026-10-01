@@ -289,3 +289,35 @@ know if something is broken at pilot scale, per that same section.
   deferred per Architecture doc section 10/12, same reasoning repeated
   throughout this document: don't solve a scale problem that doesn't
   exist yet.
+
+---
+
+## Security hardening notes
+
+**Creating the first admin.** `POST /v1/auth/register` accepts `customer`,
+`contractor` and `resource_owner` only - it cannot create an admin. Set
+`BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `.env.prod`, restart
+`platform-spine`, then **delete the password line**. It is create-only: an
+existing account is never modified or promoted. Manual alternative:
+`docker compose -f docker-compose.prod.yml exec platform-spine python -m app.bootstrap`.
+
+**Auth rate limits.** Login is limited to 10/minute and registration to
+10/hour per client IP (`RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER`). Counters
+are in-process, so they are per replica - move to Redis before running more
+than one `platform-spine` container. `RATE_LIMIT_TRUST_FORWARDED_FOR` must stay
+`0` while ports 8001-8004 are reachable directly (a direct caller can forge
+`X-Forwarded-For`). If you later route everything through Traefik and close
+those ports, set it to `1`; with it left at `0` behind the gateway, all users
+share Traefik's IP and therefore one shared limit.
+
+**Containers run as an unprivileged user** (`borewell`, uid 10001), not root.
+
+**Webhook replay window.** `POST /v1/payments/webhook` ignores (HTTP 200,
+`ignored_stale`) events whose `created_at` is older than 25h
+(`WEBHOOK_MAX_AGE_SECONDS`) or more than 5 minutes in the future. Razorpay
+retries failed deliveries for 24h, so the window must stay above that. The real
+replay protection is the status-based idempotency in the handler.
+
+**Unhandled errors** are logged server-side as `request.failed` (with
+traceback and `trace_id`) and returned to clients as
+`{"error": {"code": "INTERNAL_ERROR", ...}}` with no internals.

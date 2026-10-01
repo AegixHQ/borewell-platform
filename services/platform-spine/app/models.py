@@ -11,6 +11,10 @@ from app.database import Base
 MONEY = Numeric(precision=12, scale=2)
 
 ROLES = ("customer", "contractor", "admin", "resource_owner")
+# Roles anyone may pick at self-registration. "admin" is deliberately absent:
+# it is created only via app/bootstrap.py. (Tokens and DB rows still carry
+# the full ROLES set - this narrows what the public endpoint will grant.)
+PUBLIC_ROLES = ("customer", "contractor", "resource_owner")
 JOB_STATUSES = (
     "lead", "site_location", "requirement", "estimation", "price_calculation",
     "quotation", "customer_approval", "booking", "resource_allocation",

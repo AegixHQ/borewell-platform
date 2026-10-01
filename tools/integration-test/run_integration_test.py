@@ -143,6 +143,20 @@ def register_and_login(role, label):
     return token
 
 
+def login_bootstrapped_admin():
+    """Admin accounts cannot be self-registered; docker-compose.yml bootstraps
+    one for dev/CI via BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD."""
+    email = os.getenv("INTEGRATION_ADMIN_EMAIL", "admin@borewell.local")
+    password = os.getenv("INTEGRATION_ADMIN_PASSWORD", "dev-only-admin-password")
+    login = _request(
+        "POST", f"{PLATFORM_SPINE_URL}/v1/auth/login", json={"email": email, "password": password}
+    )
+    _expect(login, 200, "login bootstrapped admin")
+    assert login.json()["role"] == "admin"
+    print("[ok] logged in bootstrapped admin")
+    return login.json()["access_token"]
+
+
 def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
@@ -165,7 +179,18 @@ def run():
     # frontend would never call directly (Razorpay's webhook is), but is
     # exactly right here since this script has no real Razorpay account
     # to trigger a real webhook with.
-    admin_token = register_and_login("admin", "admin")
+    admin_token = login_bootstrapped_admin()
+    deny = _request(
+        "POST",
+        f"{PLATFORM_SPINE_URL}/v1/auth/register",
+        json={
+            "email": f"integration-{RUN_ID}-evil@example.com",
+            "password": "integration-test-password-12345",
+            "role": "admin",
+        },
+    )
+    _expect(deny, 422, "public registration as admin must be refused")
+    print("[ok] self-registering as admin is refused")
 
     # ---------- 2. lead: customer creates a job ----------
     # Real coordinates inside Virudhunagar (pilot service area territory -

@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
-from app.models import JOB_STATUSES, ROLES
+from app.models import JOB_STATUSES, PUBLIC_ROLES
 
 
 class RegisterRequest(BaseModel):
@@ -17,8 +17,8 @@ class RegisterRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def role_must_be_valid(cls, v):
-        if v not in ROLES:
-            raise ValueError(f"role must be one of {ROLES}")
+        if v not in PUBLIC_ROLES:
+            raise ValueError(f"role must be one of {PUBLIC_ROLES}")
         return v
 
     @field_validator("phone")

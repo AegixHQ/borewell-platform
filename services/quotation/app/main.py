@@ -68,7 +68,29 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Anything that escapes the route or a dependency (a DB outage in
+        # get_db, say) used to bypass this middleware entirely: Starlette
+        # answered with a bare 500 and nothing was logged here. Log the real
+        # traceback server-side, keyed by trace_id, and return the shared
+        # error format with NO internals - the client gets only the trace_id
+        # to quote to support.
+        logger.exception(
+            "request.failed method=%s path=%s",
+            request.method,
+            request.url.path,
+            extra={"trace_id": request.state.trace_id},
+        )
+        response = JSONResponse(
+            status_code=500,
+            content=_error_body(
+                "INTERNAL_ERROR",
+                "An unexpected error occurred. Quote the trace_id if you contact support.",
+                request,
+            ),
+        )
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
     level = logging.WARNING if response.status_code >= 500 else logging.INFO

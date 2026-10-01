@@ -82,7 +82,29 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Anything that escapes the route or a dependency (a DB outage in
+        # get_db, say) used to bypass this middleware entirely: Starlette
+        # answered with a bare 500 and nothing was logged here. Log the real
+        # traceback server-side, keyed by trace_id, and return the shared
+        # error format with NO internals - the client gets only the trace_id
+        # to quote to support.
+        logger.exception(
+            "request.failed method=%s path=%s",
+            request.method,
+            request.url.path,
+            extra={"trace_id": request.state.trace_id},
+        )
+        response = JSONResponse(
+            status_code=500,
+            content=_error_body(
+                "INTERNAL_ERROR",
+                "An unexpected error occurred. Quote the trace_id if you contact support.",
+                request,
+            ),
+        )
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
     # Deliberately never logs the request or response BODY - only method,
@@ -416,6 +438,12 @@ def fail_payment(
     return _payment_to_response(payment)
 
 
+# See the replay-window comment inside razorpay_webhook. 25h = Razorpay's 24h
+# retry horizon + 1h margin; the future-skew allowance absorbs clock drift.
+_WEBHOOK_MAX_AGE_SECONDS = int(os.getenv("WEBHOOK_MAX_AGE_SECONDS", str(25 * 3600)))
+_WEBHOOK_MAX_FUTURE_SKEW_SECONDS = 300
+
+
 @app.post("/v1/payments/webhook")
 async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     """Real, primary payment-confirmation path - see app/gateway/
@@ -472,6 +500,28 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
 
     payload = await request.json()
     event = payload.get("event")
+
+    # Replay window. Razorpay retries a failed delivery for up to 24 hours
+    # (https://razorpay.com/docs/webhooks/ - "re-tried ... for 24 hours"), so
+    # the window must be WIDER than that or a legitimate retry after our own
+    # downtime would be dropped. That makes this a backstop against very old
+    # captured payloads, not the primary defence: status-based idempotency
+    # below is what actually makes a replay harmless. Stale events get a 200
+    # (not a 4xx) so a mistaken rejection can never push Razorpay's retry
+    # cycle towards disabling the webhook. A payload with no usable
+    # created_at is processed normally - never reject on a field we
+    # cannot rely on being present.
+    created_at = payload.get("created_at")
+    if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+        age_s = time.time() - created_at
+        if age_s > _WEBHOOK_MAX_AGE_SECONDS or age_s < -_WEBHOOK_MAX_FUTURE_SKEW_SECONDS:
+            logger.warning(
+                "razorpay.webhook.stale event=%s event_id=%s age_seconds=%s",
+                event,
+                event_id,
+                int(age_s),
+            )
+            return {"status": "ignored_stale", "event": event}
 
     # Unhandled event type: acknowledge with 200 rather than reject, so
     # Razorpay doesn't retry an event this endpoint has no reaction to -
