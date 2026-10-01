@@ -1,0 +1,43 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "demo": {
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_DEMO": "1"
+      }
+    },
+    "lan": {
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_DEMO": "0",
+        "EXPO_PUBLIC_PLATFORM_SPINE_URL": "http://192.168.1.50:8001",
+        "EXPO_PUBLIC_QUOTATION_URL": "http://192.168.1.50:8002",
+        "EXPO_PUBLIC_RESOURCE_NETWORK_URL": "http://192.168.1.50:8003",
+        "EXPO_PUBLIC_PAYMENTS_URL": "http://192.168.1.50:8004"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_DEMO": "0",
+        "EXPO_PUBLIC_PLATFORM_SPINE_URL": "https://api.CHANGE-ME.in",
+        "EXPO_PUBLIC_QUOTATION_URL": "https://api.CHANGE-ME.in",
+        "EXPO_PUBLIC_RESOURCE_NETWORK_URL": "https://api.CHANGE-ME.in",
+        "EXPO_PUBLIC_PAYMENTS_URL": "https://api.CHANGE-ME.in"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

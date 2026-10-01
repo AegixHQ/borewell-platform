@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint lint-frontend lint-all check-contracts migrate prod-up prod-down prod-logs
+.PHONY: up down logs test lint lint-frontend lint-app lint-all check-contracts migrate prod-up prod-down prod-logs
 
 up:
 	docker compose up --build -d
@@ -21,7 +21,10 @@ lint:
 lint-frontend:
 	npm run lint
 
-lint-all: lint lint-frontend
+lint-app:
+	cd apps/borewell-native && npm run lint
+
+lint-all: lint lint-frontend lint-app
 
 check-contracts:
 	@for svc in platform-spine quotation resource-network payments-data; do \

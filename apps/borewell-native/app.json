@@ -1,13 +1,14 @@
 {
   "expo": {
-    "name": "borewell-native",
+    "name": "Borewell",
     "slug": "borewell-native",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "in.aegix.borewell"
     },
     "android": {
       "adaptiveIcon": {
@@ -15,10 +16,18 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "in.aegix.borewell"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "backgroundColor": "#EDECE8",
+    "splash": {
+      "backgroundColor": "#141619",
+      "resizeMode": "contain",
+      "image": "./assets/splash-icon.png"
     }
   }
 }

@@ -32,6 +32,21 @@ export const RESOURCE_NETWORK_URL =
 export const PAYMENTS_URL =
   process.env.EXPO_PUBLIC_PAYMENTS_URL || "http://localhost:8004";
 
+/**
+ * Demo mode: an in-memory stand-in for the four services, so the app can be
+ * opened and clicked through without any backend (services/demo.js).
+ *
+ * On by default when NO backend URL is configured, because the default
+ * "localhost" below cannot reach a backend from a simulator or a phone
+ * anyway (see the note under it) - an app that shows a connection error on
+ * first launch would just look broken. Set EXPO_PUBLIC_DEMO=0 to force the
+ * real services even without a URL, or EXPO_PUBLIC_DEMO=1 to force demo
+ * mode even when one is set. Every screen shows a DEMO chip while it is on.
+ */
+export const DEMO_MODE =
+  process.env.EXPO_PUBLIC_DEMO === "1" ||
+  (process.env.EXPO_PUBLIC_DEMO !== "0" && !process.env.EXPO_PUBLIC_PLATFORM_SPINE_URL);
+
 // "localhost" above will NOT reach your backend from a real device or
 // even the iOS Simulator/Android Emulator in many setups - localhost
 // inside the emulator/simulator/device refers to ITSELF, not your
@@ -236,4 +251,65 @@ export async function rejectBooking(resourceNetworkUrl, token, bookingId) {
     method: "POST",
     token,
   });
+}
+
+// --- added for the Field Console UI (all paths exist in
+// packages/contracts/openapi/*.yaml) ---
+
+// platform-spine: completion (contractor only, job must be at "completion")
+export async function logJobCompletion(platformSpineUrl, token, jobId, { actualDepthFt, actualCost }) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion`, {
+    method: "POST",
+    token,
+    body: { actual_depth_ft: actualDepthFt, actual_cost: actualCost },
+  });
+}
+
+// 404 = no completion record yet (expected for any job not yet closed out)
+export async function getJobCompletionResult(platformSpineUrl, token, jobId) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion/result`, { token });
+}
+
+// quotation: edit creates a new version server-side (contractor only)
+export async function editQuotation(quotationUrl, token, quotationId, { lineItems, totalEstimate }) {
+  return request(quotationUrl, `/v1/quotations/${quotationId}`, {
+    method: "PATCH",
+    token,
+    body: { line_items: lineItems, total_estimate: totalEstimate },
+  });
+}
+
+// payments-data
+export async function listPayments(paymentsUrl, token) {
+  return request(paymentsUrl, "/v1/payments", { token });
+}
+
+export async function createRazorpayOrder(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/create-order`, {
+    method: "POST",
+    token,
+  });
+}
+
+// resource-network: pilot service areas
+export async function listServiceAreas(resourceNetworkUrl, token) {
+  return request(resourceNetworkUrl, "/v1/service-areas", { token });
+}
+
+export async function upsertServiceArea(resourceNetworkUrl, token, area) {
+  return request(resourceNetworkUrl, "/v1/service-areas", {
+    method: "POST",
+    token,
+    body: area,
+  });
+}
+
+// 404 (outside every configured area) is the normal outcome outside the
+// pilot villages - callers should treat it as "no area", not an error.
+export async function lookupServiceArea(resourceNetworkUrl, token, { lat, lng }) {
+  return request(
+    resourceNetworkUrl,
+    `/v1/service-areas/lookup?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
+    { token }
+  );
 }

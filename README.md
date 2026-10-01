@@ -60,7 +60,7 @@ flowchart LR
 | | App | Stack | Status |
 |---|---|---|---|
 | 🌐 | **`apps/web-app`** | React + Vite | One unified app for all 4 roles (`ADR-0002`) — real dashboards, real API wiring |
-| 📱 | **`apps/borewell-native`** | Expo / React Native | Scaffolded for iOS + Android — login, role routing, and secure session persistence work now; screens are placeholders with the build order documented in its own `AGENTS.md` |
+| 📱 | **`apps/borewell-native`** | Expo / React Native | Every screen built to the approved design (`ADR-0005`) for all three roles, real API wiring, map-based site picking, and a demo mode that runs with no backend. Runs in Expo Go — no native build. See its own `AGENTS.md` |
 | 🧰 | **`apps/shared-ui`** | Plain JS | API client + auth helpers shared by `web-app` — **not** in the same npm workspace as `borewell-native` (Metro doesn't hoist well; see that app's `AGENTS.md`) |
 | 🗄️ | `apps/contractor-app`, `customer-app`, `resource-owner-app` | React | **Deprecated**, kept as reference only — see each folder's `DEPRECATED.md`. Don't build here. |
 
@@ -96,8 +96,11 @@ open http://localhost:5173
 cd apps/borewell-native
 cp .env.example .env          # use your machine's real LAN IP, not localhost
 npm install
-npm start                     # then press i (iOS) or a (Android)
+npm run web                   # in a browser
+npm start                     # or on a phone, via Expo Go
 ```
+
+**Just want to see the app?** With no `.env` file it runs against an in-memory demo backend — `npm install && npm run web` and sign in as any demo account. See `docs/guides/HOW-TO-RUN.md` (and `docs/guides/RUN-ON-PHONE.md` for a phone without Docker).
 
 💡 **Set up pre-commit hooks once**, so lint and contract-drift issues get caught before you commit, not just in CI:
 
@@ -141,6 +144,8 @@ Register as any of the four roles from the registration screen. Each role routes
 ## 📸 Screenshots & Demo
 
 > **No real screenshots or demo video exist yet.** `web-app`'s dashboards are wired to the real backend but not visually designed (see `apps/AGENTS.md`), and `apps/borewell-native` has a working login screen with placeholder dashboards beyond that (see that app's own `AGENTS.md` for the exact build order). Nothing here is polished enough yet to be worth screenshotting — this section is a placeholder with a real checklist, not filled with anything fabricated to look finished before it is.
+
+**Running app (native, demo mode):** real screenshots of every role's screens are in `docs/assets/screenshots/app/`.
 
 **Design mockups (target UI, not the running app):**
 

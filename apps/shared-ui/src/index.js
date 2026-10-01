@@ -24,4 +24,12 @@ export {
   rejectBooking,
   createPayment,
   getPayment,
+  logJobCompletion,
+  getJobCompletionResult,
+  editQuotation,
+  listPayments,
+  createRazorpayOrder,
+  listServiceAreas,
+  upsertServiceArea,
+  lookupServiceArea,
 } from "./platform.js";
