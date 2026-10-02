@@ -422,6 +422,40 @@ def run():
     # ---------- 6. track: advance the job through its real lifecycle ----------
     # RFC 0001 section 8 order - platform-spine's job_state_machine.py is
     # the actual enforcement, this script just exercises it for real.
+    # ---------- 5b. hardening: stale, duplicate and anonymous requests are refused ----------
+    _expect(
+        _request(
+            "POST",
+            f"{QUOTATION_URL}/v1/quotations/{quotation_id}/reject",
+            headers=auth_header(customer_token),
+        ),
+        409,
+        "an approved quotation cannot be flipped to rejected",
+    )
+    second_tap = _expect(
+        _request(
+            "POST",
+            f"{PAYMENTS_URL}/v1/payments",
+            json={
+                "job_id": job_id,
+                "quotation_id": quotation_id,
+                "amount": quotation["total_estimate"],
+                "idempotency_key": f"integration-{RUN_ID}-second-tap",
+            },
+            headers=auth_header(customer_token),
+        ),
+        201,
+        "second payment attempt with a fresh idempotency key",
+    )
+    if second_tap.json()["payment_id"] != payment_id:
+        raise StepFailed("a fresh idempotency key opened a second payment for one quotation")
+    _expect(
+        _request("GET", f"{RESOURCE_NETWORK_URL}/v1/service-areas"),
+        401,
+        "service-area list requires a login",
+    )
+    print("[ok] stale approval, double payment, and anonymous listing were all refused")
+
     stages = [
         "site_location", "requirement", "estimation", "price_calculation",
         "quotation", "customer_approval", "booking", "resource_allocation",

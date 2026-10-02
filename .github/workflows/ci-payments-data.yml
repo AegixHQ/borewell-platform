@@ -12,6 +12,10 @@ on:
       - 'packages/contracts/openapi/payments-data.yaml'
       - 'tools/contract-check/**'
 
+# Least privilege: no job here pushes code, comments, or publishes anything.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

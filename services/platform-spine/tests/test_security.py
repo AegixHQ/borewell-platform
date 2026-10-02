@@ -137,3 +137,129 @@ def test_parse_limit():
     for bad in ("", "10", "ten/minute", "0/minute", "10/fortnight"):
         with pytest.raises(ValueError):
             parse_limit(bad)
+
+
+# ---------- passwords: bcrypt's 72-byte limit, and a constant-work login ----------
+def test_register_rejects_a_password_longer_than_bcrypt_can_hash(client):
+    resp = client.post("/v1/auth/register", json={**REG, "password": "a" * 73})
+    assert resp.status_code == 422  # used to be an unhandled 500 under bcrypt 5
+
+
+def test_register_counts_bytes_not_characters(client):
+    # 25 characters, 75 bytes
+    resp = client.post("/v1/auth/register", json={**REG, "password": "€" * 25})
+    assert resp.status_code == 422
+    assert client.post("/v1/auth/register", json={**REG, "password": "€" * 24}).status_code == 201
+
+
+def test_login_with_an_overlong_password_is_a_clean_401_not_a_500(client):
+    client.post("/v1/auth/register", json=REG)
+    for password in ("a" * 73, "a" * 5000):
+        resp = client.post("/v1/auth/login", json={"email": REG["email"], "password": password})
+        assert resp.status_code in (401, 422)
+
+
+def test_login_does_the_same_bcrypt_work_for_an_unknown_email(client, monkeypatch):
+    """Unknown email used to skip bcrypt entirely (~1 ms vs ~280 ms), which
+    revealed which emails are registered."""
+    from app import main
+    from app.security import DUMMY_PASSWORD_HASH
+
+    checked_against = []
+    real = main.verify_password
+
+    def spy(password, password_hash):
+        checked_against.append(password_hash)
+        return real(password, password_hash)
+
+    monkeypatch.setattr(main, "verify_password", spy)
+    resp = client.post(
+        "/v1/auth/login", json={"email": "ghost@example.com", "password": "whatever123"}
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
+    assert checked_against == [DUMMY_PASSWORD_HASH]
+
+
+def test_unknown_email_and_wrong_password_look_identical(client):
+    client.post("/v1/auth/register", json=REG)
+    unknown = client.post(
+        "/v1/auth/login", json={"email": "ghost@example.com", "password": "whatever123"}
+    )
+    wrong = client.post(
+        "/v1/auth/login", json={"email": REG["email"], "password": "not-the-password"}
+    )
+    assert unknown.status_code == wrong.status_code == 401
+    assert unknown.json()["error"]["message"] == wrong.json()["error"]["message"]
+
+
+def test_phone_length_is_bounded(client):
+    padded = "9876543210" + " " * 100_000  # strips to a valid 10-digit number, yet is huge
+    resp = client.post("/v1/auth/register", json={**REG, "phone": padded})
+    assert resp.status_code == 422
+
+
+# ---------- contractor accounts can be closed to public sign-up ----------
+def test_contractor_registration_is_open_by_default(client):
+    assert client.post("/v1/auth/register", json={**REG, "role": "contractor"}).status_code == 201
+
+
+def test_contractor_registration_can_be_closed(client, monkeypatch):
+    monkeypatch.setenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "0")
+    resp = client.post("/v1/auth/register", json={**REG, "role": "contractor"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "CONTRACTOR_REGISTRATION_CLOSED"
+    # the other public roles are unaffected, and nothing was created for the refused one
+    assert client.post("/v1/auth/register", json={**REG, "role": "customer"}).status_code == 201
+    other = {"email": "o@example.com", "password": "supersecret123", "role": "resource_owner"}
+    assert client.post("/v1/auth/register", json=other).status_code == 201
+
+
+def test_operator_can_create_a_contractor_when_public_signup_is_closed(client, monkeypatch):
+    from app.bootstrap import ensure_user
+
+    monkeypatch.setenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "0")
+    with client.test_session_local() as db:
+        assert ensure_user(db, "owner@example.com", "a-long-password-123", "contractor") is True
+    resp = client.post(
+        "/v1/auth/login", json={"email": "owner@example.com", "password": "a-long-password-123"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "contractor"
+
+
+def test_ensure_user_rejects_unknown_roles_and_overlong_passwords(client):
+    from app.bootstrap import ensure_user
+
+    with client.test_session_local() as db:
+        with pytest.raises(ValueError):
+            ensure_user(db, "a@example.com", "a-long-password-123", "superuser")
+        with pytest.raises(ValueError):
+            ensure_user(db, "a@example.com", "a" * 73, "contractor")
+
+
+def test_create_user_cli_prompts_for_the_password(client, monkeypatch, capsys):
+    from app import bootstrap
+
+    passwords = iter(["cli-made-password-1", "cli-made-password-1"])
+    monkeypatch.setattr(bootstrap.getpass, "getpass", lambda prompt="": next(passwords))
+    session = client.test_session_local()
+    monkeypatch.setattr(bootstrap, "_with_session", lambda fn: fn(session))
+    code = bootstrap.main(["create-user", "--role", "contractor", "--email", "cli@example.com"])
+    assert code == 0
+    assert "created" in capsys.readouterr().out
+    resp = client.post(
+        "/v1/auth/login", json={"email": "cli@example.com", "password": "cli-made-password-1"}
+    )
+    assert resp.json()["role"] == "contractor"
+
+
+def test_create_user_cli_refuses_mismatched_passwords(client, monkeypatch):
+    from app import bootstrap
+
+    passwords = iter(["first-password-123", "second-password-456"])
+    monkeypatch.setattr(bootstrap.getpass, "getpass", lambda prompt="": next(passwords))
+    called = []
+    monkeypatch.setattr(bootstrap, "_with_session", lambda fn: called.append(1))
+    assert bootstrap.main(["create-user", "--role", "admin", "--email", "x@example.com"]) == 1
+    assert called == []

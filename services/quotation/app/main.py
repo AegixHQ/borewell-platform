@@ -17,6 +17,7 @@ from app import events, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.estimation.engine import estimate_depth
+from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.jobs.job_client import JobNotFound, JobServiceError, fetch_job
 from app.location.location_client import lookup_service_area
 from app.logging_config import configure_logging
@@ -29,6 +30,7 @@ app = FastAPI(
     title="quotation",
     version="0.1.0",
     description="Location Intelligence and Estimation Engine, Quotation and Pricing Engine",
+    **api_docs_kwargs(),
 )
 
 _ALLOWED_ORIGINS = [
@@ -38,6 +40,7 @@ _ALLOWED_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -50,7 +53,9 @@ app.add_middleware(GZipMiddleware)
 # include_in_schema=False + IGNORED_PATHS entry in
 # tools/contract-check/check_contract.py - see platform-spine/app/main.py's
 # identical block for the full rationale, unchanged here.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(metrics_guard)]
+)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app -
 # same discipline as platform-spine.
@@ -188,9 +193,7 @@ def list_pricing_rules(
     db: Session = Depends(get_db), claims: dict = Depends(require_role("contractor"))
 ):
     return (
-        db.query(models.PricingRule)
-        .filter(models.PricingRule.contractor_id == claims["sub"])
-        .all()
+        db.query(models.PricingRule).filter(models.PricingRule.contractor_id == claims["sub"]).all()
     )
 
 
@@ -208,12 +211,28 @@ def _get_rule(db: Session, contractor_id: str, job_type: str):
     )
 
 
-def _quotation_to_response(q: models.Quotation) -> schemas.QuotationResponse:
+def _is_superseded(db: Session, q: models.Quotation) -> bool:
+    """True when a newer version exists for the same job. Derived on read,
+    not stored: versioning stays append-only (models.Quotation docstring),
+    and an old row can never be left 'approved' by mistake."""
+    return (
+        db.query(models.Quotation.id)
+        .filter(models.Quotation.job_id == q.job_id, models.Quotation.version > q.version)
+        .first()
+        is not None
+    )
+
+
+def _quotation_to_response(
+    q: models.Quotation, superseded: bool = False
+) -> schemas.QuotationResponse:
     return schemas.QuotationResponse(
         quotation_id=q.id,
         job_id=q.job_id,
         version=q.version,
-        status=q.status,
+        # An older version reads as "superseded" whatever its stored status was,
+        # so payments (which requires "approved") can never be made against it.
+        status="superseded" if superseded else q.status,
         estimated_depth_range=schemas.DepthRange(
             min_ft=q.estimated_depth_min_ft,
             max_ft=q.estimated_depth_max_ft,
@@ -240,6 +259,30 @@ def _require_quotation_access(quotation: models.Quotation, claims: dict) -> None
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "You do not have access to this quotation."},
         )
+
+
+def _require_latest_version(db: Session, quotation: models.Quotation) -> None:
+    """SRS section 8: approving/rejecting a quotation that a newer version has
+    superseded must fail - otherwise a customer could approve (and then pay)
+    an old, cheaper version after the contractor revised the price."""
+    if _is_superseded(db, quotation):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "QUOTATION_SUPERSEDED",
+                "message": "A newer version of this quotation exists - review the latest version.",
+            },
+        )
+
+
+def _state_conflict(quotation: models.Quotation, wanted: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "QUOTATION_STATE_CONFLICT",
+            "message": f"This quotation is already {quotation.status} and cannot be {wanted}.",
+        },
+    )
 
 
 @app.post("/v1/quotations", response_model=schemas.QuotationResponse, status_code=201)
@@ -349,7 +392,7 @@ def get_quotation(
             detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
         )
     _require_quotation_access(quotation, claims)
-    return _quotation_to_response(quotation)
+    return _quotation_to_response(quotation, superseded=_is_superseded(db, quotation))
 
 
 @app.get("/v1/quotations/job/{job_id}/latest", response_model=schemas.QuotationResponse)
@@ -467,6 +510,11 @@ def approve_quotation(
             detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
         )
     _require_quotation_access(quotation, claims)
+    _require_latest_version(db, quotation)
+    if quotation.status == "approved":  # replay of the same decision: idempotent
+        return _quotation_to_response(quotation)
+    if quotation.status != "draft" and quotation.status != "sent":
+        raise _state_conflict(quotation, "approved")
     quotation.status = "approved"
     db.commit()
     db.refresh(quotation)
@@ -486,6 +534,13 @@ def reject_quotation(
             detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
         )
     _require_quotation_access(quotation, claims)
+    _require_latest_version(db, quotation)
+    if quotation.status == "rejected":  # replay of the same decision: idempotent
+        return _quotation_to_response(quotation)
+    # An approved quotation is binding (BR-06): it cannot be flipped to
+    # rejected after the fact - e.g. after the customer has already paid.
+    if quotation.status != "draft" and quotation.status != "sent":
+        raise _state_conflict(quotation, "rejected")
     quotation.status = "rejected"
     db.commit()
     db.refresh(quotation)

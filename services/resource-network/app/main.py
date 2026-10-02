@@ -15,8 +15,9 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import get_db
-from app.deps import require_role
+from app.deps import get_current_claims, require_role
 from app.geo import haversine_km
+from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.logging_config import configure_logging
 
 configure_logging()
@@ -26,13 +27,17 @@ app = FastAPI(
     title="resource-network",
     version="0.1.0",
     description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media",
+    **api_docs_kwargs(),
 )
 
 _ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ).split(",")
     if o.strip()
 ]
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -45,7 +50,9 @@ app.add_middleware(GZipMiddleware)
 # include_in_schema=False + IGNORED_PATHS entry in
 # tools/contract-check/check_contract.py - see platform-spine/app/main.py's
 # identical block for the full rationale, unchanged here.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(metrics_guard)]
+)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # Inventory CRUD only in MVP - matching engine is Phase 1 (see app/matching/).
@@ -431,9 +438,7 @@ def _respond_to_booking(
     booking_id: uuid.UUID, new_status: str, db: Session, claims: dict
 ) -> models.BookingRequest:
     booking = (
-        db.query(models.BookingRequest)
-        .filter(models.BookingRequest.id == str(booking_id))
-        .first()
+        db.query(models.BookingRequest).filter(models.BookingRequest.id == str(booking_id)).first()
     )
     if not booking:
         raise HTTPException(
@@ -457,8 +462,7 @@ def _respond_to_booking(
             detail={
                 "code": "BOOKING_ALREADY_RESOLVED",
                 "message": (
-                    f"This booking request is already '{booking.status}' "
-                    "and cannot be changed."
+                    f"This booking request is already '{booking.status}' and cannot be changed."
                 ),
             },
         )
@@ -558,7 +562,12 @@ def upsert_service_area(
 
 
 @app.get("/v1/service-areas", response_model=list[schemas.ServiceAreaResponse])
-def list_service_areas(db: Session = Depends(get_db)):
+def list_service_areas(
+    db: Session = Depends(get_db),
+    # Was open to the internet and unpaginated; /lookup beside it already
+    # required a login. Any authenticated role may list (map pickers need it).
+    claims: dict = Depends(get_current_claims),
+):
     areas = db.query(models.ServiceArea).order_by(models.ServiceArea.name).all()
     return [_service_area_to_response(a) for a in areas]
 

@@ -10,9 +10,16 @@ from app.models import JOB_STATUSES, PUBLIC_ROLES
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
-    phone: Optional[str] = None
+    password: str = Field(min_length=8, max_length=128)
+    phone: Optional[str] = Field(default=None, max_length=20)
     role: str = Field(default="customer")
+
+    @field_validator("password")
+    @classmethod
+    def password_fits_bcrypt(cls, v):
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("password must be at most 72 bytes (about 72 characters)")
+        return v
 
     @field_validator("role")
     @classmethod
@@ -36,7 +43,7 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=128)
 
 
 class TokenResponse(BaseModel):

@@ -321,3 +321,22 @@ replay protection is the status-based idempotency in the handler.
 **Unhandled errors** are logged server-side as `request.failed` (with
 traceback and `trace_id`) and returned to clients as
 `{"error": {"code": "INTERNAL_ERROR", ...}}` with no internals.
+
+**Contractor accounts.** Public sign-up for the `contractor` role is closed by
+default (`ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0`) because a contractor can see
+every customer's jobs and payments. Create the pilot contractor with
+`docker compose -f docker-compose.prod.yml exec -it platform-spine python -m
+app.bootstrap create-user --role contractor --email owner@example.com`
+(prompts for the password; create-only - an existing account is never changed).
+
+**Gateway-only mode.** Once every client goes through Traefik, set
+`SERVICE_BIND_ADDR=127.0.0.1` (the service ports stop being reachable from
+outside) and `RATE_LIMIT_TRUST_FORWARDED_FOR=1` (per-client rate limits behind
+the gateway). Do both together: the second is only safe if the first holds.
+
+**Optional `/metrics` token.** Set `METRICS_TOKEN` on a service to require
+`Authorization: Bearer <token>`; give Prometheus the same value with
+`authorization: { credentials_file: ... }` in `infra/monitoring/prometheus.yml`.
+Unset, `/metrics` stays open (and reachable on the published ports).
+
+See `SECURITY.md` for the full list of what was fixed and what remains.

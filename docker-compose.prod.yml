@@ -186,6 +186,8 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRY_MINUTES: "60"
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # The interactive docs publish the whole API surface; keep them off in production.
+      ENABLE_API_DOCS: "0"
       QUOTATION_SERVICE_URL: http://quotation:8000
       # Optional. Set BOTH to create the first admin on next start, then
       # remove the password from .env.prod (see app/bootstrap.py).
@@ -196,8 +198,14 @@ services:
       # X-Forwarded-For). Turn it on only when ALL traffic comes through
       # Traefik - otherwise every user shares the gateway's IP.
       RATE_LIMIT_TRUST_FORWARDED_FOR: ${RATE_LIMIT_TRUST_FORWARDED_FOR:-0}
+      # A contractor can read every customer's jobs and payments, so public
+      # sign-up for that role is CLOSED by default in production. Create the
+      # pilot contractor with: docker compose -f docker-compose.prod.yml exec -it \
+      #   platform-spine python -m app.bootstrap create-user --role contractor --email <email>
+      # (or set this to 1 just long enough for them to register, then back to 0).
+      ALLOW_PUBLIC_CONTRACTOR_REGISTRATION: ${ALLOW_PUBLIC_CONTRACTOR_REGISTRATION:-0}
     ports:
-      - "8001:8000"
+      - "${SERVICE_BIND_ADDR:-0.0.0.0}:8001:8000"
     healthcheck:
       # Python, not curl - python:3.11-slim (this service's base image,
       # see services/platform-spine/Dockerfile) doesn't ship curl/wget,
@@ -231,10 +239,12 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # The interactive docs publish the whole API surface; keep them off in production.
+      ENABLE_API_DOCS: "0"
       RESOURCE_NETWORK_URL: http://resource-network:8000
       PLATFORM_SPINE_URL: http://platform-spine:8000
     ports:
-      - "8002:8000"
+      - "${SERVICE_BIND_ADDR:-0.0.0.0}:8002:8000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
       interval: 15s
@@ -259,8 +269,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # The interactive docs publish the whole API surface; keep them off in production.
+      ENABLE_API_DOCS: "0"
     ports:
-      - "8003:8000"
+      - "${SERVICE_BIND_ADDR:-0.0.0.0}:8003:8000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
       interval: 15s
@@ -286,11 +298,13 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       QUOTATION_SERVICE_URL: http://quotation:8000
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      # The interactive docs publish the whole API surface; keep them off in production.
+      ENABLE_API_DOCS: "0"
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
     ports:
-      - "8004:8000"
+      - "${SERVICE_BIND_ADDR:-0.0.0.0}:8004:8000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)"]
       interval: 15s

@@ -12,7 +12,7 @@ class PaymentCreateRequest(BaseModel):
     # total_estimate (SRS section 6). See fetch_quotation in
     # app/payments/quotation_client.py for how the comparison side is parsed.
     amount: Decimal = Field(gt=0)
-    idempotency_key: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
 
 
 class PaymentResponse(BaseModel):

@@ -4,6 +4,7 @@ import os
 # JWT_SECRET at module import time and refuses to start without it (F-03).
 os.environ.setdefault("JWT_SECRET", "test-secret-for-ci-and-local-tests-only")
 
+import time
 import uuid
 from decimal import Decimal
 
@@ -27,7 +28,11 @@ DEFAULT_JOB_ID = str(uuid.uuid4())
 
 def make_token(user_id: str, role: str) -> str:
     stable_uuid = str(uuid.uuid5(_NAMESPACE, user_id))
-    return jwt.encode({"sub": stable_uuid, "role": role}, JWT_SECRET_FOR_TESTS, algorithm="HS256")
+    return jwt.encode(
+        {"sub": stable_uuid, "role": role, "exp": int(time.time()) + 3600},
+        JWT_SECRET_FOR_TESTS,
+        algorithm="HS256",
+    )
 
 
 def fake_quotation_fetcher(status="approved", total_estimate=Decimal("95450.00"), job_id=None):

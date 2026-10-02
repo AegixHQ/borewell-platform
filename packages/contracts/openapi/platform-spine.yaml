@@ -30,8 +30,10 @@ paths:
                   role: { type: string, enum: [customer, contractor, admin, resource_owner] }
         '409':
           description: Email already registered
+        '403':
+          description: CONTRACTOR_REGISTRATION_CLOSED - public sign-up for the contractor role is disabled (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0); an operator creates these accounts
         '422':
-          description: Validation error (including a role that cannot be self-registered, e.g. admin)
+          description: Validation error (including a role that cannot be self-registered, e.g. admin, or a password over 72 bytes)
         '429':
           description: Too many registration attempts from this client; see Retry-After
   /v1/auth/login:

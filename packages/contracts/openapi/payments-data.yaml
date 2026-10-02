@@ -21,7 +21,7 @@ paths:
                 # here would round-trip through float and make that exact
                 # comparison meaningless - see app/schemas.py's comment.
                 amount: { type: string, format: decimal, example: "95450.00" }
-                idempotency_key: { type: string }
+                idempotency_key: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '201':
           description: Payment created (or the existing one, if idempotency_key was already used)
@@ -33,6 +33,11 @@ paths:
           description: Quotation not approved, or amount does not match the approved total
         '403':
           description: Only customers may create payments
+        '409':
+          description: |
+            IDEMPOTENCY_KEY_CONFLICT - the key was already used by another customer, or for a different job/quotation/amount.
+            ALREADY_PAID - this quotation already has a completed payment.
+            (A quotation with a still-pending payment returns that payment instead of opening a second one.)
         '502':
           description: Could not reach the quotation service to verify the quotation
     get:

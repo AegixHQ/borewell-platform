@@ -21,7 +21,8 @@
         "EXPO_PUBLIC_PLATFORM_SPINE_URL": "http://192.168.1.50:8001",
         "EXPO_PUBLIC_QUOTATION_URL": "http://192.168.1.50:8002",
         "EXPO_PUBLIC_RESOURCE_NETWORK_URL": "http://192.168.1.50:8003",
-        "EXPO_PUBLIC_PAYMENTS_URL": "http://192.168.1.50:8004"
+        "EXPO_PUBLIC_PAYMENTS_URL": "http://192.168.1.50:8004",
+        "EXPO_PUBLIC_ALLOW_INSECURE_HTTP": "1"
       }
     },
     "production": {

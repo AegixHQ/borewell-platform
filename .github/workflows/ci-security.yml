@@ -1,0 +1,48 @@
+name: security
+
+# Weekly as well as on every change: new CVEs are published against code that
+# has not changed, so a green push last month says nothing about today.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scanners
+        run: pip install bandit pip-audit
+      - name: Static analysis (bandit, medium severity and up)
+        run: bandit -q -r services -x '*/tests/*' -ll
+      - name: Known-vulnerable Python dependencies
+        run: |
+          for svc in platform-spine quotation resource-network payments-data; do
+            echo "== $svc"
+            pip-audit --progress-spinner off "services/$svc"
+          done
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Web workspace (production dependencies, high and above)
+        run: npm ci && npm audit --omit=dev --audit-level=high
+      - name: Native app (production dependencies, critical only)
+        # The advisories that remain here are all in Expo's build-time tooling
+        # (config plugins, xcode, glob helpers) - none of it ships in the app,
+        # and npm's suggested "fix" is a downgrade to Expo 46. Critical still fails the build.
+        working-directory: apps/borewell-native
+        run: npm ci && npm audit --omit=dev --audit-level=critical

@@ -24,6 +24,7 @@ from app.gateway.razorpay_client import (
     get_razorpay_config,
     verify_webhook_signature,
 )
+from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.logging_config import configure_logging
 from app.payments.quotation_client import (
     QuotationAccessDenied,
@@ -39,13 +40,17 @@ app = FastAPI(
     title="payments-data",
     version="0.1.0",
     description="Payments and Split Settlement, Data and Analytics",
+    **api_docs_kwargs(),
 )
 
 _ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ).split(",")
     if o.strip()
 ]
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -68,7 +73,9 @@ app.add_middleware(GZipMiddleware)
 # no-request-body-touched guarantee as the GZipMiddleware note above
 # applies here too, checked for the same reason: this instrumentator only
 # reads response status/timing, never the request or response body.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(metrics_guard)]
+)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 
@@ -174,6 +181,44 @@ def _payment_to_response(p: models.Payment) -> schemas.PaymentResponse:
     )
 
 
+def _idempotent_replay(
+    existing: models.Payment, claims: dict, payload: schemas.PaymentCreateRequest
+) -> schemas.PaymentResponse:
+    """A replayed idempotency key returns the original payment - but only to
+    the caller who made it, and only for the SAME request. Otherwise the key
+    was never "theirs": answering with the stored payment would hand another
+    customer's payment (job, quotation, amount, Razorpay order) to anyone who
+    knew or guessed a key, or silently return a payment for a different
+    quotation/amount than the one just asked for."""
+    same_request = (
+        existing.customer_id == claims["sub"]
+        and existing.job_id == str(payload.job_id)
+        and existing.quotation_id == str(payload.quotation_id)
+        and existing.amount == payload.amount
+    )
+    if not same_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "This idempotency key was already used for a different request.",
+            },
+        )
+    return _payment_to_response(existing)
+
+
+def _lock_quotation_for_payment(db: Session, quotation_id: str) -> None:
+    """Serialise concurrent payment creation for ONE quotation. A double-tap
+    sends two requests with different idempotency keys; without this both
+    pass the open-payment check below and two charges get created. The lock
+    is transaction-scoped (released on commit/rollback). Postgres only -
+    SQLite, used by the unit tests, has a single writer anyway. Deliberately
+    NOT a unique index: a late webhook capturing an earlier failed attempt
+    must still be recordable (a constraint violation there would lose it)."""
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": quotation_id})
+
+
 @app.post("/v1/payments", response_model=schemas.PaymentResponse, status_code=201)
 def create_payment(
     payload: schemas.PaymentCreateRequest,
@@ -191,7 +236,7 @@ def create_payment(
         .first()
     )
     if existing:
-        return _payment_to_response(existing)
+        return _idempotent_replay(existing, claims, payload)
 
     auth_header = request.headers.get("Authorization", "")
     try:
@@ -256,6 +301,33 @@ def create_payment(
             },
         )
 
+    # One live payment per quotation. A fresh idempotency key must not open a
+    # second charge for something already paid, or while a checkout is open.
+    _lock_quotation_for_payment(db, str(payload.quotation_id))
+    open_payment = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.quotation_id == str(payload.quotation_id),
+            models.Payment.status.in_(("pending", "completed")),
+        )
+        .order_by(models.Payment.created_at)
+        .first()
+    )
+    if open_payment is not None:
+        if open_payment.status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "ALREADY_PAID",
+                    "message": "This quotation has already been paid.",
+                },
+            )
+        # pending: the customer is retrying checkout - continue that attempt
+        # (POST /create-order is re-entrant and returns the same order)
+        response = _payment_to_response(open_payment)
+        db.rollback()  # releases the advisory lock
+        return response
+
     payment = models.Payment(
         job_id=str(payload.job_id),
         quotation_id=str(payload.quotation_id),
@@ -277,7 +349,7 @@ def create_payment(
             .filter(models.Payment.idempotency_key == payload.idempotency_key)
             .first()
         )
-        return _payment_to_response(existing)
+        return _idempotent_replay(existing, claims, payload)
     db.refresh(payment)
     return _payment_to_response(payment)
 
