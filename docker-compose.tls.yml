@@ -1,0 +1,51 @@
+# Opt-in HTTPS for the production stack (Let's Encrypt, HTTP-01 challenge).
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.tls.yml \
+#     --env-file .env.prod up -d
+#
+# Needs, in .env.prod:  PUBLIC_DOMAIN, LETSENCRYPT_EMAIL
+# And on the network:   a DNS A record for PUBLIC_DOMAIN pointing at this VM,
+#                       with ports 80 AND 443 reachable from the internet
+#                       (80 is used for the certificate challenge).
+#
+# What it does: serves HTTPS on :443 with an automatically issued and renewed
+# certificate, redirects all :80 traffic to HTTPS, and adds security headers
+# (infra/gateway/dynamic/tls-headers.yml). The routers in the base file have
+# no entrypoint restriction, so they are served on both ports unchanged.
+#
+# Compose REPLACES a service's `command` list rather than merging it, so the
+# flags from docker-compose.prod.yml are repeated below. If you change the
+# gateway flags in one file, change them in the other.
+#
+# First run: use Let's Encrypt's staging CA to avoid its rate limits while you
+# check DNS and ports:
+#   LETSENCRYPT_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+# (browsers will show a certificate warning for staging certs). Then remove
+# that line, delete the `traefik_letsencrypt` volume, and start again.
+services:
+  gateway:
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.middlewares=secure-headers@file"
+      - "--entrypoints.websecure.http.tls.certresolver=le"
+      # The routers only match on path, so tell Traefik which domain to
+      # request the certificate for.
+      - "--entrypoints.websecure.http.tls.domains[0].main=${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env.prod}"
+      - "--certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL:?set LETSENCRYPT_EMAIL in .env.prod}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.caserver=${LETSENCRYPT_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
+    ports:
+      - "443:443"
+    volumes:
+      - traefik_letsencrypt:/letsencrypt
+      - ./infra/gateway/dynamic:/etc/traefik/dynamic:ro
+
+volumes:
+  traefik_letsencrypt:

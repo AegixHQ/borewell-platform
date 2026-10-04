@@ -30,9 +30,13 @@ HS256 pinned; bcrypt; no raw SQL; CORS credentials off.
 
 ## Known and deliberately NOT fixed
 
-1. **No TLS.** The production stack serves plain HTTP on port 80, so passwords
-   and tokens cross the network in clear. Put TLS in front (Traefik ACME or a
-   load balancer) **before any real customer uses it.** Biggest remaining risk.
+1. **TLS is opt-in, not on by default.** `docker-compose.tls.yml` adds Let's
+   Encrypt HTTPS, an HTTP->HTTPS redirect and security headers. The flags were
+   checked against the real Traefik 3.1.7 binary (redirect and headers confirmed),
+   but the compose merge and the live certificate issuance have not been run -
+   do the staging-CA run described in `docs/deployment/PRODUCTION.md` first.
+   Until you use the overlay, passwords and tokens cross the network in clear.
+   **Do not let a real customer on before it is on.**
 2. **A contractor still sees all customers' data.** Closing sign-up (#2) limits
    *who* can be one; it is not tenancy. Before a second contractor exists, jobs
    and payments need a `contractor_id` scope on every read.
@@ -58,7 +62,7 @@ HS256 pinned; bcrypt; no raw SQL; CORS credentials off.
 
 ## Operator checklist for the pilot
 
-- [ ] TLS in front of the gateway (item 1 above)
+- [ ] TLS on: `docker-compose.tls.yml`, staging-CA run first (item 1 above)
 - [ ] `.env.prod`: strong `JWT_SECRET`, `BOOTSTRAP_ADMIN_*` set once then **removed**
 - [ ] Pilot contractor created via `create-user`; `ALLOW_PUBLIC_CONTRACTOR_REGISTRATION` stays `0`
 - [ ] If clients go through Traefik only: `SERVICE_BIND_ADDR=127.0.0.1` **and** `RATE_LIMIT_TRUST_FORWARDED_FOR=1`

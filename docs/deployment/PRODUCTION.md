@@ -340,3 +340,20 @@ the gateway). Do both together: the second is only safe if the first holds.
 Unset, `/metrics` stays open (and reachable on the published ports).
 
 See `SECURITY.md` for the full list of what was fixed and what remains.
+
+**HTTPS (Let's Encrypt).** The base stack serves plain HTTP. For real users, add
+the TLS overlay:
+
+    docker compose -f docker-compose.prod.yml -f docker-compose.tls.yml \
+      --env-file .env.prod up -d
+
+Set `PUBLIC_DOMAIN` and `LETSENCRYPT_EMAIL` in `.env.prod` first, point the
+domain's DNS A record at the VM, and keep ports 80 and 443 open (80 is used for
+the certificate challenge and then redirects to HTTPS). Do a first run against
+the staging CA (`LETSENCRYPT_CA_SERVER`, see `.env.prod.example`), then remove
+that line, delete the `traefik_letsencrypt` volume, and start again for a real
+certificate. Certificates renew automatically. Responses get HSTS (starts at one
+day - raise `stsSeconds` in `infra/gateway/dynamic/tls-headers.yml` to a year
+once HTTPS has worked for a few days), nosniff, frame-deny and no-referrer.
+Then point the apps at `https://<PUBLIC_DOMAIN>` (EAS `production` profile) and
+set `ALLOWED_ORIGINS` to the real web origin.
