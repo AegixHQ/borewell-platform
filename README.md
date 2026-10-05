@@ -9,7 +9,7 @@
 *Piloting in Madurai district (Virudhunagar and neighboring villages) — expandable from there.*
 
 [![Backend CI](https://img.shields.io/badge/backend-4%20services-blue)]()
-[![Tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-258%20passing-brightgreen)]()
 [![Frontend](https://img.shields.io/badge/frontend-web%20%2B%20native-orange)]()
 [![License](https://img.shields.io/badge/status-pilot-lightgrey)]()
 
@@ -50,10 +50,10 @@ flowchart LR
 
 | # | Service | Owner | Port | What it does |
 |---|---|:---:|:---:|---|
-| 🔐 | **`platform-spine`** | Dev A | `8001` | Identity/RBAC (`customer` · `contractor` · `resource_owner` · `admin`), job lifecycle state machine, job completion + quoted-vs-actual variance |
-| 💰 | **`quotation`** | Dev B | `8002` | Configurable pricing engine, **location-aware depth estimation** for pilot service areas, versioned quotations |
+| 🔐 | **`platform-spine`** | Dev A | `8001` | Identity/RBAC (`customer` · `contractor` · `resource_owner` · `admin`; `admin` is created out-of-band, never self-registered), rate-limited auth, job lifecycle state machine, job completion + quoted-vs-actual variance |
+| 💰 | **`quotation`** | Dev B | `8002` | Configurable pricing engine, **location-aware depth estimation** for pilot service areas, append-only versioned quotations (older versions read as `superseded` and can't be approved or paid) |
 | 🗺️ | **`resource-network`** | Dev C | `8003` | Multi-owner resource inventory, **cross-owner nearest-resource search**, booking request → accept/reject flow, pilot service-area data |
-| 💳 | **`payments-data`** | Dev D | `8004` | DB-enforced idempotent payments, **real Razorpay integration** (order creation + signed webhook) — code-complete, needs live API keys |
+| 💳 | **`payments-data`** | Dev D | `8004` | DB-enforced idempotent payments (one live payment per quotation), **real Razorpay integration** (order creation + signed webhook with a 25 h replay window) — code-complete, needs live API keys |
 
 ### Frontend — two active surfaces, one reference set
 
@@ -76,6 +76,8 @@ flowchart LR
 # 2️⃣  Set the one required secret
 cp services/platform-spine/.env.example services/platform-spine/.env
 #    → edit JWT_SECRET to any long random string
+#    → optional: set BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD to get an admin
+#      (admin can't be registered through the API; see SECURITY.md)
 
 # 3️⃣  Bring up all 4 backend services + web-app + Postgres + Redis
 make up
@@ -115,6 +117,7 @@ pip install pre-commit && pre-commit install
 Single-VM deployment via `docker-compose.prod.yml` — a deliberate choice per `Architecture §10`: no managed orchestration until there's real multi-contractor load to justify it.
 
 **📘 Full runbook: [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md)** — secrets setup, first deploy, verification, HTTPS, Razorpay dashboard setup, redeploys, rollback.
+**🔒 Security posture and what is deliberately not fixed: [`SECURITY.md`](SECURITY.md)** — read it before real customers are on.
 
 ```bash
 make prod-up     # 🏗️  build + start the production stack
@@ -122,11 +125,19 @@ make prod-logs   # 📜  follow logs
 make prod-down   # 🛑  stop it
 ```
 
+**HTTPS is opt-in** (`docker-compose.tls.yml`: Let's Encrypt, HTTP→HTTPS redirect, HSTS and security headers). Set `PUBLIC_DOMAIN` and `LETSENCRYPT_EMAIL` in `.env.prod`, do a staging-CA run first, then:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.tls.yml --env-file .env.prod up -d --build
+```
+
+**Production defaults worth knowing:** containers run as a non-root user; API docs are off (`ENABLE_API_DOCS=0`); public **contractor sign-up is closed** (`ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0` — create contractors with `python -m app.bootstrap create-user`); login/register are rate limited; request bodies are capped at 1 MiB; direct service ports can be bound to loopback with `SERVICE_BIND_ADDR=127.0.0.1`.
+
 ---
 
 ## 🔄 Using the App — a full walkthrough
 
-Register as any of the four roles from the registration screen. Each role routes to its own dashboard (**client-side routing is UX only** — the real access-control boundary is every backend service's `require_role` dependency; see e.g. `resource-network/tests/test_resources.py`).
+Register as a customer or resource owner from the registration screen (contractor sign-up is open in dev but closed by default in production; `admin` is never self-registered). Each role routes to its own dashboard (**client-side routing is UX only** — the real access-control boundary is every backend service's `require_role` dependency; see e.g. `resource-network/tests/test_resources.py`).
 
 | Step | Who | What happens |
 |:---:|---|---|
@@ -143,31 +154,13 @@ Register as any of the four roles from the registration screen. Each role routes
 
 ## 📸 Screenshots & Demo
 
-> **No real screenshots or demo video exist yet.** `web-app`'s dashboards are wired to the real backend but not visually designed (see `apps/AGENTS.md`), and `apps/borewell-native` has a working login screen with placeholder dashboards beyond that (see that app's own `AGENTS.md` for the exact build order). Nothing here is polished enough yet to be worth screenshotting — this section is a placeholder with a real checklist, not filled with anything fabricated to look finished before it is.
+Real renders of `apps/borewell-native` (390×844, demo backend) — one customer, one contractor and one resource-owner flow. All 12 are in [`docs/assets/screenshots/app/`](docs/assets/screenshots/app/).
 
-**Running app (native, demo mode):** real screenshots of every role's screens are in `docs/assets/screenshots/app/`.
+| Customer | Contractor | Resource owner |
+|:---:|:---:|:---:|
+| ![Customer quotation](docs/assets/screenshots/app/03-customer-quotation.png) | ![Contractor board](docs/assets/screenshots/app/06-contractor-board.png) | ![Owner requests](docs/assets/screenshots/app/10-owner-requests.png) |
 
-**Design mockups (target UI, not the running app):**
-
-| | |
-|---|---|
-| ![Full flow mockups](docs/assets/screenshots/borewell-ui-mockups-full.jpeg) | ![Mobile screens](docs/assets/screenshots/borewell-ui-screens-mobile.jpeg) |
-
-These are design references for Milestone 3 frontend implementation — see `docs/assets/README.md` for what each covers. Once the real apps are visually built out, this section gets replaced with actual screenshots per the checklist below.
-
-**To add real media once there's something worth showing:**
-
-1. Drop image files into `docs/assets/screenshots/` (create the folder) and video files or links into `docs/assets/demo/`.
-2. Reference them here with standard markdown image syntax: `![Customer quote screen](docs/assets/screenshots/customer-quote.png)`.
-3. For a demo video, either commit a short `.gif` directly (renders inline on GitHub, no extra clicks) or link out to a hosted video (YouTube/Loom) — a large `.mp4` committed to git bloats the repo and isn't the right place for it.
-
-**What's worth capturing first, in order of usefulness:**
-
-| Priority | What | Why |
-|:---:|---|---|
-| 1 | Customer flow: location entry → quote (with depth/confidence badge) → payment → tracking | The core product loop, most likely to be shown to a client or investor |
-| 2 | Contractor: nearby-resource search results + a booking request being accepted | Demonstrates the actual marketplace mechanic (`ADR-0004`) that differentiates this from a plain lead-tracker |
-| 3 | Native app: login + role routing | Proves the mobile path is real, even before its screens are built out |
+No demo video exists yet. If you add one, commit a short `.gif` (renders inline on GitHub) or link a hosted video — a large `.mp4` bloats the repo.
 
 ---
 
@@ -209,6 +202,7 @@ Every workflow lives in `.github/workflows/`, runs on every push/PR, and is repr
 | `ci-platform-spine.yml`<br>`ci-quotation.yml`<br>`ci-resource-network.yml`<br>`ci-payments-data.yml` | That service's `pytest` suite + `ruff check` + `check_contract.py` | 🎯 path-scoped |
 | `ci-frontend.yml` | `npm install` from repo root (workspace-aware) + `npm run lint` + `npm run build --workspace=web-app` | 🎯 `apps/**` |
 | `ci-borewell-native.yml` | `eslint-config-expo` lint + a real **Metro bundle** for iOS (proves every import in the app actually resolves) | 🎯 `apps/borewell-native/**` |
+| `ci-security.yml` | Weekly + on dependency changes: `bandit`, `pip-audit`, `npm audit` (fails on critical). Dependabot (`.github/dependabot.yml`) opens update PRs. All workflows run with `contents: read` only | 🎯 schedule + manifests |
 | `ci-deployment.yml` | Both compose files parse + every Dockerfile in the repo actually builds | 🎯 compose/Dockerfile changes |
 | `ci-integration.yml` | 🔥 **The one workflow that boots all 4 real services via `docker compose up`** and runs a genuine cross-service flow over real HTTP — registration, job creation, marketplace search, booking accept, location-aware quotation, approval, payment, full lifecycle, completion + variance | 🌍 every push/PR, unscoped |
 
@@ -221,6 +215,16 @@ Every workflow lives in `.github/workflows/`, runs on every push/PR, and is repr
 ## 📁 Before you touch the top-level structure
 
 Read **`STRUCTURE.md`** first. New services and apps are added by following the existing template folders — not by renaming or restructuring what's already here.
+
+## 📚 More docs
+
+| Doc | For |
+|---|---|
+| [`SECURITY.md`](SECURITY.md) | What was fixed in the security audits, what is deliberately not, and the pilot operator checklist |
+| [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md) | Deploy runbook, HTTPS, Razorpay setup, rollback |
+| [`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md) | Auth contract, error format, CORS, Razorpay flow for the frontend |
+| [`docs/guides/HOW-TO-RUN.md`](docs/guides/HOW-TO-RUN.md), [`RUN-ON-PHONE.md`](docs/guides/RUN-ON-PHONE.md) | Run the native app (with or without Docker) |
+| [`docs/adr/`](docs/adr/) | Every architecture decision since the RFC |
 
 ## 📐 Contracts
 

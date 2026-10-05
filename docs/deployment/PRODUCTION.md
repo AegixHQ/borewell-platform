@@ -194,19 +194,13 @@ for port 8004, or whatever port a reverse proxy in front of it uses).
 
 ## 7. HTTPS (do this before real customer data touches this VM)
 
-Not automated here - deliberately, since certificate/domain setup is
-specific to your registrar and hosting provider. The gateway
-(`docker-compose.prod.yml`'s `gateway` service, Traefik) is where this
-belongs once you're ready - Traefik has built-in ACME/Let's Encrypt
-support, so this is a config addition to the existing `gateway` service
-(a `certificatesResolvers` block plus a `websecure` entrypoint on 443),
-not a new piece of infrastructure. The alternative - fronting the whole
-VM with a CDN/proxy like Cloudflare that terminates TLS before traffic
-reaches port 80 - also works and requires no gateway config changes at
-all, just a DNS/proxy setup outside this repo. `docs/BACKEND_INTEGRATION.md`
-section 7 has the same two options from the frontend-integrator's side,
-if you need to coordinate this with whoever's building the separate
-frontend repo. Once either is in place:
+The base stack serves plain HTTP. The supported route is the opt-in TLS overlay
+`docker-compose.tls.yml` (Traefik + Let's Encrypt, HTTP->HTTPS redirect, security
+headers); the exact commands and the staging-CA first run are under "HTTPS (Let's
+Encrypt)" in *Security hardening notes* below. Fronting the VM with a CDN/proxy
+like Cloudflare that terminates TLS also works with no gateway changes.
+`docs/BACKEND_INTEGRATION.md` section 7 has the frontend-integrator's view. Once
+either is in place:
 - Update `PUBLIC_URL` in `.env.prod` to the `https://` URL - this is read
   at container start by whichever services use it (see
   `.env.prod.example`'s own comment on that var for exactly which ones),

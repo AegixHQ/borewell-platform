@@ -16,6 +16,11 @@
 > `services/payments-data/app/gateway/razorpay_client.py`). Test count as
 > of the Razorpay work: 166 passing across 4 services, not the 89 below.
 >
+> Later still (Oct 2026): two security audits (see `SECURITY.md`) and the
+> native-app import (`ADR-0005`); 258 passing across 4 services. Admin is no
+> longer self-registerable and the admin-gated `confirm`/`fail` "placeholders"
+> described below were replaced by the signed Razorpay webhook.
+>
 > **For current state, read `README.md` and `docs/adr/` - not this
 > file.** This is kept as a historical record of one point in the
 > project's development, not updated to match reality after this point.

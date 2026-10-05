@@ -97,10 +97,13 @@ Content-Type: application/json
 }
 ```
 
-Valid `role` values: `customer`, `contractor`, `resource_owner`, `admin`.
-There is no invite/approval flow in this MVP — any client can self-register
-as any role, including `admin`. (Worth knowing, not something this doc is
-recommending you expose casually in a real product UI.)
+Valid self-registration `role` values: `customer`, `contractor`, `resource_owner`.
+`admin` is **rejected with `422`** — it is created out-of-band
+(`BOOTSTRAP_ADMIN_*` env vars or `python -m app.bootstrap create-user`).
+In production `contractor` is also closed by default
+(`ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0`) and returns `403`; only build a
+public contractor sign-up screen if the operator has enabled it. Passwords
+must be 8–72 **bytes** (`422` otherwise).
 
 **Response — `201`:**
 ```json
@@ -119,7 +122,12 @@ Content-Type: application/json
 { "email": "user@example.com", "password": "..." }
 ```
 
-Same `201`-shaped response as register (`access_token`, `role`).
+Same `201`-shaped response as register (`access_token`, `role`). Wrong
+email and wrong password are indistinguishable (`401`).
+
+**Rate limits:** login and register are limited per client IP (`429`
+with a `Retry-After` header). Show a "try again in N seconds" message
+rather than retrying in a loop.
 
 ### Using the token
 
@@ -129,7 +137,7 @@ Every other endpoint on every service requires:
 Authorization: Bearer <access_token>
 ```
 
-- Missing, malformed, or expired token → `401`.
+- Missing, malformed, or expired token (or one without `exp`/`sub`/`role`) → `401`.
 - Token valid but wrong role for the endpoint → `403`.
 - Default expiry: 60 minutes (`JWT_EXPIRY_MINUTES`, server-configured).
   **There is no refresh-token flow in this MVP** — when a token expires,
@@ -166,6 +174,20 @@ Validation errors (missing/malformed fields) come back as `422` with
 `code: "VALIDATION_ERROR"` and FastAPI's own field-level detail in
 `message`.
 
+Status codes worth handling in a client:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `409` | `QUOTATION_STATE_CONFLICT` | Quotation was superseded by a newer version, or already decided the other way. Refetch and show the latest. |
+| `409` | `ALREADY_PAID` | That quotation already has a completed payment. |
+| `409` | (idempotency) | The `Idempotency-Key` was already used for a different customer/request. Use a fresh key (max 128 chars). |
+| `413` | — | Request body over 1 MiB. |
+| `429` | — | Rate limited (login/register); honour `Retry-After`. |
+| `500` | `INTERNAL_ERROR` | Unhandled error; report the `trace_id`. |
+
+A quotation's `status` can also read `superseded` (a newer version exists).
+Only the latest version can be approved, rejected or paid.
+
 ---
 
 ## 5. CORS (browser clients only — not mobile)
@@ -198,7 +220,10 @@ verification, idempotency. Your frontend's job is narrower than it might
 look:
 
 1. `POST /v1/payments` with the approved quotation's total → creates a
-   `pending` payment record.
+   `pending` payment record. There is one live payment per quotation:
+   calling it again while one is pending returns that payment; after it is
+   paid you get `409 ALREADY_PAID`. Send an `Idempotency-Key` and reuse it
+   on retries (double-taps are safe).
 2. `POST /v1/payments/{payment_id}/create-order` → returns a Razorpay
    order, including `razorpay_key_id` (Razorpay's **public** key — this is
    meant to be seen by the client, unlike the secret). Reopening this
@@ -224,23 +249,16 @@ all, only whatever public `key_id` the backend hands back in step 2.
 
 ## 7. TLS / HTTPS
 
-The gateway (§2) currently serves plain HTTP on port `80`. There's no TLS
-termination configured yet — that needs a real domain name pointed at the
-VM first, which may not exist on day one of a pilot. Once you have one, two
-straightforward options exist (neither is set up yet, both are genuinely
-simple to add on top of what's here):
+The default gateway serves plain HTTP on port `80`. HTTPS is an **opt-in
+overlay**, `docker-compose.tls.yml` (Let's Encrypt via Traefik, HTTP→HTTPS
+redirect, HSTS, `nosniff`, frame-deny). It needs a real domain pointed at the
+VM; see `docs/deployment/PRODUCTION.md` §7. Fronting the VM with a CDN/proxy
+that terminates TLS (e.g. Cloudflare) is an equally valid alternative.
 
-- A managed certificate via Traefik's ACME/Let's Encrypt integration
-  (config addition to the existing `gateway` service, no architecture
-  change), or
-- Fronting the whole VM with a CDN/proxy (e.g. Cloudflare) that terminates
-  TLS before traffic even reaches port 80.
-
-Until one of these is in place, treat any real (non-development) traffic
-to this backend as **not yet safe for production credentials/payment
-data over the wire** — plan your integration testing accordingly, and flag
-to the backend team when you're ready to move past local/staging testing
-so TLS gets prioritized.
+Until one of these is in place, treat any real (non-development) traffic as
+**not safe for production credentials/payment data over the wire**. The native
+app's release builds refuse `http://` URLs unless built with
+`EXPO_PUBLIC_ALLOW_INSECURE_HTTP=1` (the EAS `lan` profile).
 
 ---
 
