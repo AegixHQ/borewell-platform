@@ -39,7 +39,7 @@ jobs:
   validate-compose:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate docker-compose.yml (dev)
         run: docker compose -f docker-compose.yml config --quiet
@@ -58,14 +58,14 @@ jobs:
       matrix:
         service: [platform-spine, quotation, resource-network, payments-data]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build ${{ matrix.service }} image
         run: docker build -t borewell-${{ matrix.service }}:ci ./services/${{ matrix.service }}
 
   build-frontend-images:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build web-app production image (nginx, multi-stage)
         run: docker build -t borewell-web-app-prod:ci -f apps/web-app/Dockerfile .
