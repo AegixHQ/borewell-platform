@@ -14,7 +14,7 @@
     "shared-ui": "*"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.0",
+    "@vitejs/plugin-react": "^6.2.1",
     "vite": "^5.2.0"
   }
 }
