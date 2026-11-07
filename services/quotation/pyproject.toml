@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Borewell Platform - quotation service (Location Intelligence and Estimation Engine, Quotation and Pricing Engine)"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.110",
+    "fastapi>=0.162.0",
     "uvicorn[standard]>=0.29",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
