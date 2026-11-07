@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
-    "@expo/metro-runtime": "^57.0.16",
+    "@expo/metro-runtime": "^58.0.17",
     "expo": "~57.0.22",
     "expo-secure-store": "^57.0.4",
     "expo-status-bar": "~57.0.1",
