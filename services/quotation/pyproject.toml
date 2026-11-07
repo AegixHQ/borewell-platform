@@ -11,7 +11,7 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "pydantic>=2.6",
     "redis>=5.0",
-    "pyjwt>=2.8",
+    "pyjwt>=2.15.1",
     "httpx>=0.27",
     "prometheus-fastapi-instrumentator>=8.0",
 ]
