@@ -22,7 +22,7 @@
   },
   "private": true,
   "devDependencies": {
-    "eslint": "^9.39.5",
+    "eslint": "^10.14.0",
     "eslint-config-expo": "^57.0.2"
   }
 }
