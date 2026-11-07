@@ -395,3 +395,68 @@ def test_webhook_end_to_end_with_real_unmocked_signature_verification(client, mo
     )
     assert tampered_resp.status_code == 400
     assert tampered_resp.json()["error"]["code"] == "INVALID_SIGNATURE"
+
+
+# ---------- replay window (Razorpay retries for 24h, so the window is 25h) ----------
+def _pending_order(client, order_id):
+    payment = _create_pending_payment(client)
+    with patch("app.main.get_razorpay_config", return_value=FAKE_CFG), patch(
+        "app.main.create_order",
+        return_value={"id": order_id, "amount": 9545000, "currency": "INR"},
+    ):
+        client.post(
+            f"/v1/payments/{payment['payment_id']}/create-order",
+            headers={"Authorization": f"Bearer {CUST_TOKEN}"},
+        )
+    return payment
+
+
+def _post_webhook(client, order_id, created_at):
+    payload = _webhook_payload("payment.captured", order_id)
+    if created_at is not None:
+        payload["created_at"] = created_at
+    with patch("app.main.verify_webhook_signature", return_value=None):
+        return client.post(
+            "/v1/payments/webhook", content=json.dumps(payload).encode(), headers=_WEBHOOK_HEADERS
+        )
+
+
+def _status(client, payment):
+    return client.get(
+        f"/v1/payments/{payment['payment_id']}", headers={"Authorization": f"Bearer {CUST_TOKEN}"}
+    ).json()["status"]
+
+
+def test_webhook_older_than_the_window_is_ignored_with_200(client):
+    import time
+
+    payment = _pending_order(client, "order_stale")
+    resp = _post_webhook(client, "order_stale", int(time.time()) - 26 * 3600)
+    assert resp.status_code == 200  # never a 4xx: must not push Razorpay toward disabling the hook
+    assert resp.json()["status"] == "ignored_stale"
+    assert _status(client, payment) == "pending"
+
+
+def test_webhook_from_a_late_razorpay_retry_is_still_processed(client):
+    import time
+
+    payment = _pending_order(client, "order_retry")
+    # 23h old: a legitimate retry after our own downtime, inside Razorpay's 24h retry horizon
+    resp = _post_webhook(client, "order_retry", int(time.time()) - 23 * 3600)
+    assert resp.json()["status"] == "completed"
+    assert _status(client, payment) == "completed"
+
+
+def test_webhook_timestamped_far_in_the_future_is_ignored(client):
+    import time
+
+    payment = _pending_order(client, "order_future")
+    resp = _post_webhook(client, "order_future", int(time.time()) + 3600)
+    assert resp.json()["status"] == "ignored_stale"
+    assert _status(client, payment) == "pending"
+
+
+def test_webhook_without_created_at_is_processed_normally(client):
+    payment = _pending_order(client, "order_nots")
+    assert _post_webhook(client, "order_nots", None).json()["status"] == "completed"
+    assert _status(client, payment) == "completed"

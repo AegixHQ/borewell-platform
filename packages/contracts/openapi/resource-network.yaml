@@ -173,8 +173,10 @@ paths:
         '403':
           description: Contractor/admin only
     get:
-      summary: List all configured service areas.
+      summary: List all configured service areas. Any authenticated role.
       responses:
+        '401':
+          description: Missing or invalid token
         '200':
           description: Service area list
           content:

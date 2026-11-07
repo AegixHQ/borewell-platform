@@ -15,12 +15,19 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import events, models, payment_consumer, quotation_client, schemas
+from app import bootstrap, events, models, payment_consumer, quotation_client, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
+from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.job_state_machine import InvalidTransitionError, validate_transition
 from app.logging_config import configure_logging
-from app.security import create_access_token, hash_password, verify_password
+from app.ratelimit import login_rate_limit, register_rate_limit
+from app.security import (
+    DUMMY_PASSWORD_HASH,
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -36,6 +43,9 @@ async def _lifespan(_app: FastAPI):
     # form, which does trigger this - confirmed by running the real test
     # suite, not assumed).
     payment_consumer.start()
+    # Create the first admin out-of-band (no-op unless both env vars are set) -
+    # public registration cannot create one. See app/bootstrap.py.
+    bootstrap.bootstrap_admin_from_env()
     yield
 
 
@@ -44,13 +54,17 @@ app = FastAPI(
     version="0.1.0",
     description="Identity/RBAC, Job Orchestration state machine, Notifications, Gateway routing",
     lifespan=_lifespan,
+    **api_docs_kwargs(),
 )
 
 _ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ).split(",")
     if o.strip()
 ]
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -75,7 +89,9 @@ app.add_middleware(GZipMiddleware)
 # tools/contract-check/ flag every other service's identical /metrics
 # endpoint as "undeclared" forever, for an endpoint that was never meant
 # to be declared business API in the first place.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(metrics_guard)]
+)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 # The app deliberately does NOT call Base.metadata.create_all() - relying on
@@ -95,7 +111,29 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Anything that escapes the route or a dependency (a DB outage in
+        # get_db, say) used to bypass this middleware entirely: Starlette
+        # answered with a bare 500 and nothing was logged here. Log the real
+        # traceback server-side, keyed by trace_id, and return the shared
+        # error format with NO internals - the client gets only the trace_id
+        # to quote to support.
+        logger.exception(
+            "request.failed method=%s path=%s",
+            request.method,
+            request.url.path,
+            extra={"trace_id": request.state.trace_id},
+        )
+        response = JSONResponse(
+            status_code=500,
+            content=_error_body(
+                "INTERNAL_ERROR",
+                "An unexpected error occurred. Quote the trace_id if you contact support.",
+                request,
+            ),
+        )
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
     # One line per request, INFO for anything under 500 (expected 4xx
@@ -126,7 +164,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         code, message = detail["code"], detail["message"]
     else:
         code, message = "ERROR", str(detail)
-    return JSONResponse(status_code=exc.status_code, content=_error_body(code, message, request))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_body(code, message, request),
+        headers=getattr(exc, "headers", None),  # e.g. Retry-After on 429
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -156,8 +198,28 @@ def readyz(db: Session = Depends(get_db)):
 # ---------- auth (FR-AUTH-01 .. FR-AUTH-04) ----------
 
 
-@app.post("/v1/auth/register", response_model=schemas.TokenResponse, status_code=201)
+@app.post(
+    "/v1/auth/register",
+    response_model=schemas.TokenResponse,
+    status_code=201,
+    dependencies=[Depends(register_rate_limit)],
+)
 def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
+    # A contractor can see every customer's jobs and payments (the MVP data model
+    # is single-contractor), so once the pilot contractor exists, public
+    # sign-up for that role must be closed: ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0.
+    # New contractors are then created by an operator: python -m app.bootstrap create-user.
+    if (
+        payload.role == "contractor"
+        and os.getenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "1") == "0"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "CONTRACTOR_REGISTRATION_CLOSED",
+                "message": "Contractor accounts are created by the platform administrator.",
+            },
+        )
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
         raise HTTPException(
@@ -184,10 +246,20 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     return schemas.TokenResponse(access_token=token, role=user.role)
 
 
-@app.post("/v1/auth/login", response_model=schemas.TokenResponse)
+@app.post(
+    "/v1/auth/login",
+    response_model=schemas.TokenResponse,
+    dependencies=[Depends(login_rate_limit)],
+)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == payload.email).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    # Always spend one bcrypt check, even for an email with no account. Without
+    # this an unknown email answered in ~1 ms and a known one in ~280 ms, which
+    # tells an attacker exactly which emails are registered.
+    password_ok = verify_password(
+        payload.password, user.password_hash if user else DUMMY_PASSWORD_HASH
+    )
+    if not user or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_CREDENTIALS", "message": "Email or password is incorrect."},
@@ -368,16 +440,18 @@ def log_job_completion(
         )
 
     # BR-04: only writable once.
-    existing = db.query(models.JobCompletion).filter(
-        models.JobCompletion.job_id == str(job_id)
-    ).first()
+    existing = (
+        db.query(models.JobCompletion).filter(models.JobCompletion.job_id == str(job_id)).first()
+    )
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "ALREADY_COMPLETED",
-                "message": ("A completion record already exists for this job "
-                    "and cannot be overwritten (BR-04)."),
+                "message": (
+                    "A completion record already exists for this job "
+                    "and cannot be overwritten (BR-04)."
+                ),
             },
         )
 
@@ -392,8 +466,10 @@ def log_job_completion(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "code": "NO_APPROVED_QUOTATION",
-                "message": ("No approved quotation found. A quotation must be "
-                    "approved before logging completion."),
+                "message": (
+                    "No approved quotation found. A quotation must be "
+                    "approved before logging completion."
+                ),
             },
         )
     except quotation_client.QuotationNotApproved as exc:
@@ -447,6 +523,7 @@ def log_job_completion(
     )
 
     from datetime import datetime, timezone
+
     completed_at = datetime.now(timezone.utc)
 
     completion = models.JobCompletion(
@@ -499,9 +576,9 @@ def get_job_completion(
                 "message": "You can only view your own job's completion record.",
             },
         )
-    completion = db.query(models.JobCompletion).filter(
-        models.JobCompletion.job_id == str(job_id)
-    ).first()
+    completion = (
+        db.query(models.JobCompletion).filter(models.JobCompletion.job_id == str(job_id)).first()
+    )
     if not completion:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

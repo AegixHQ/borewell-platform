@@ -246,3 +246,64 @@ export async function rejectBooking(resourceNetworkUrl, token, bookingId) {
     token,
   });
 }
+
+// --- added for the Field Console UI (all paths exist in
+// packages/contracts/openapi/*.yaml) ---
+
+// platform-spine: completion (contractor only, job must be at "completion")
+export async function logJobCompletion(platformSpineUrl, token, jobId, { actualDepthFt, actualCost }) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion`, {
+    method: "POST",
+    token,
+    body: { actual_depth_ft: actualDepthFt, actual_cost: actualCost },
+  });
+}
+
+// 404 = no completion record yet (expected for any job not yet closed out)
+export async function getJobCompletionResult(platformSpineUrl, token, jobId) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion/result`, { token });
+}
+
+// quotation: edit creates a new version server-side (contractor only)
+export async function editQuotation(quotationUrl, token, quotationId, { lineItems, totalEstimate }) {
+  return request(quotationUrl, `/v1/quotations/${quotationId}`, {
+    method: "PATCH",
+    token,
+    body: { line_items: lineItems, total_estimate: totalEstimate },
+  });
+}
+
+// payments-data
+export async function listPayments(paymentsUrl, token) {
+  return request(paymentsUrl, "/v1/payments", { token });
+}
+
+export async function createRazorpayOrder(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/create-order`, {
+    method: "POST",
+    token,
+  });
+}
+
+// resource-network: pilot service areas
+export async function listServiceAreas(resourceNetworkUrl, token) {
+  return request(resourceNetworkUrl, "/v1/service-areas", { token });
+}
+
+export async function upsertServiceArea(resourceNetworkUrl, token, area) {
+  return request(resourceNetworkUrl, "/v1/service-areas", {
+    method: "POST",
+    token,
+    body: area,
+  });
+}
+
+// 404 (outside every configured area) is the normal outcome outside the
+// pilot villages - callers should treat it as "no area", not an error.
+export async function lookupServiceArea(resourceNetworkUrl, token, { lat, lng }) {
+  return request(
+    resourceNetworkUrl,
+    `/v1/service-areas/lookup?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
+    { token }
+  );
+}

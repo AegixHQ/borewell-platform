@@ -1,0 +1,54 @@
+# Local DEMO overlay: adds Prometheus + Grafana (and optional Razorpay test
+# keys) on top of the dev docker-compose.yml, so ONE command starts
+# everything - 4 backend services, Postgres x4, Redis, web-app, monitoring.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up --build -d
+#   (or: make demo-up)
+#
+# Reuses the same prometheus.yml and Grafana provisioning as
+# docker-compose.prod.yml - nothing about monitoring is duplicated or forked.
+# Prometheus scrapes "<service>:8000" over the compose network, which is
+# the same in dev and prod.
+
+services:
+  payments-data:
+    environment:
+      # Optional. Leave unset for a demo that skips the payment step; set
+      # rzp_test_* keys in a repo-root .env file to demo Razorpay Checkout.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+
+  prometheus:
+    image: docker.io/prom/prometheus:v2.55.1
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - platform-spine
+      - quotation
+      - resource-network
+      - payments-data
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: docker.io/grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Demo only: open the dashboard without a login screen.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

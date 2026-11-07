@@ -10,15 +10,15 @@ from app.models import RESOURCE_STATUSES, RESOURCE_TYPES
 
 class ResourceCreateRequest(BaseModel):
     resource_type: str
-    name: str = Field(min_length=1)
-    notes: Optional[str] = None
+    name: str = Field(min_length=1, max_length=120)
+    notes: Optional[str] = Field(default=None, max_length=1000)
     lat: Optional[float] = None
     lng: Optional[float] = None
     # Decimal, not float - same MONEY convention as every other price field
     # in the platform (Bug 2 fix). Optional: a resource can be registered
     # before its rate is known and priced later via PATCH.
     hourly_rate: Optional[Decimal] = Field(default=None, gt=0)
-    vehicle_type: Optional[str] = None
+    vehicle_type: Optional[str] = Field(default=None, max_length=60)
 
     @field_validator("resource_type")
     @classmethod
@@ -44,12 +44,12 @@ class ResourceCreateRequest(BaseModel):
 
 class ResourceUpdateRequest(BaseModel):
     status: Optional[str] = None
-    name: Optional[str] = None
-    notes: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    notes: Optional[str] = Field(default=None, max_length=1000)
     lat: Optional[float] = None
     lng: Optional[float] = None
     hourly_rate: Optional[Decimal] = Field(default=None, gt=0)
-    vehicle_type: Optional[str] = None
+    vehicle_type: Optional[str] = Field(default=None, max_length=60)
 
     @field_validator("status")
     @classmethod
@@ -113,9 +113,9 @@ class ResourceMatchResult(BaseModel):
 
 
 class ServiceAreaUpsertRequest(BaseModel):
-    name: str = Field(min_length=1)
-    district: str = Field(min_length=1)
-    state: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=120)
+    district: str = Field(min_length=1, max_length=80)
+    state: str = Field(min_length=1, max_length=80)
     center_lat: float
     center_lng: float
     radius_km: float = Field(gt=0)
@@ -156,7 +156,7 @@ class ServiceAreaResponse(BaseModel):
 class BookingRequestCreate(BaseModel):
     resource_id: uuid.UUID
     job_id: Optional[uuid.UUID] = None
-    message: Optional[str] = None
+    message: Optional[str] = Field(default=None, max_length=1000)
 
 
 class BookingRequestResponse(BaseModel):

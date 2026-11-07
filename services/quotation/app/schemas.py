@@ -56,7 +56,7 @@ class QuotationGenerateRequest(BaseModel):
 
 
 class LineItem(BaseModel):
-    label: str
+    label: str = Field(min_length=1, max_length=120)
     # Decimal, not float: line-item amounts feed into subtotal/margin/total
     # via repeated arithmetic (app/pricing/engine.py) - the Bug 2 fix needs
     # to survive serialization, not just live in the DB column type.
@@ -94,5 +94,5 @@ class QuotationResponse(BaseModel):
 
 
 class QuotationEditRequest(BaseModel):
-    line_items: Optional[list[LineItem]] = None
+    line_items: Optional[list[LineItem]] = Field(default=None, max_length=50)
     total_estimate: Optional[float] = Field(default=None, gt=0)

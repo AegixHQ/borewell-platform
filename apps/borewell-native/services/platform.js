@@ -32,6 +32,67 @@ export const RESOURCE_NETWORK_URL =
 export const PAYMENTS_URL =
   process.env.EXPO_PUBLIC_PAYMENTS_URL || "http://localhost:8004";
 
+/**
+ * Demo mode: an in-memory stand-in for the four services, so the app can be
+ * opened and clicked through without any backend (services/demo.js).
+ *
+ * In DEVELOPMENT (Expo Go, `npm run web`) it is on by default when no backend
+ * URL is configured, because the "localhost" default below cannot reach a
+ * backend from a simulator or a phone anyway - an app that shows a connection
+ * error on first launch would just look broken. EXPO_PUBLIC_DEMO=0 forces the
+ * real services, EXPO_PUBLIC_DEMO=1 forces demo mode.
+ *
+ * In a RELEASE build it is never implicit: only EXPO_PUBLIC_DEMO=1 turns it
+ * on. The demo backend accepts any email with no password and fakes payments,
+ * so a store build that merely forgot its backend URL must fail loudly (see
+ * assertReleaseConfig) rather than ship that. Every screen shows a DEMO chip
+ * while it is on.
+ */
+export const DEMO_MODE =
+  process.env.EXPO_PUBLIC_DEMO === "1" ||
+  (__DEV__ &&
+    process.env.EXPO_PUBLIC_DEMO !== "0" &&
+    !process.env.EXPO_PUBLIC_PLATFORM_SPINE_URL);
+
+/**
+ * Fail-fast configuration check for release builds (runs at import time).
+ *  - every backend URL must be set explicitly (no silent "localhost" default);
+ *  - every backend URL must be https:// - passwords and session tokens cross
+ *    this connection - unless the build opts in with
+ *    EXPO_PUBLIC_ALLOW_INSECURE_HTTP=1 (the "lan" EAS profile does, for
+ *    testing against a dev machine on the same network).
+ * Pure function of its inputs so it can be reasoned about without a device.
+ */
+export function assertReleaseConfig({ isDev, demo, allowInsecure, urls }) {
+  if (isDev || demo) return;
+  for (const [name, url] of Object.entries(urls)) {
+    if (!url) {
+      throw new Error(
+        `Release build is missing ${name}. Set it in the EAS build profile ` +
+          "(see eas.json); a release build never falls back to demo mode or localhost."
+      );
+    }
+    if (!allowInsecure && !/^https:\/\//i.test(url)) {
+      throw new Error(
+        `${name} must start with https:// in a release build (got "${url}"). ` +
+          "Set EXPO_PUBLIC_ALLOW_INSECURE_HTTP=1 only for a LAN test build."
+      );
+    }
+  }
+}
+
+assertReleaseConfig({
+  isDev: __DEV__,
+  demo: DEMO_MODE,
+  allowInsecure: process.env.EXPO_PUBLIC_ALLOW_INSECURE_HTTP === "1",
+  urls: {
+    EXPO_PUBLIC_PLATFORM_SPINE_URL: process.env.EXPO_PUBLIC_PLATFORM_SPINE_URL,
+    EXPO_PUBLIC_QUOTATION_URL: process.env.EXPO_PUBLIC_QUOTATION_URL,
+    EXPO_PUBLIC_RESOURCE_NETWORK_URL: process.env.EXPO_PUBLIC_RESOURCE_NETWORK_URL,
+    EXPO_PUBLIC_PAYMENTS_URL: process.env.EXPO_PUBLIC_PAYMENTS_URL,
+  },
+});
+
 // "localhost" above will NOT reach your backend from a real device or
 // even the iOS Simulator/Android Emulator in many setups - localhost
 // inside the emulator/simulator/device refers to ITSELF, not your
@@ -236,4 +297,65 @@ export async function rejectBooking(resourceNetworkUrl, token, bookingId) {
     method: "POST",
     token,
   });
+}
+
+// --- added for the Field Console UI (all paths exist in
+// packages/contracts/openapi/*.yaml) ---
+
+// platform-spine: completion (contractor only, job must be at "completion")
+export async function logJobCompletion(platformSpineUrl, token, jobId, { actualDepthFt, actualCost }) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion`, {
+    method: "POST",
+    token,
+    body: { actual_depth_ft: actualDepthFt, actual_cost: actualCost },
+  });
+}
+
+// 404 = no completion record yet (expected for any job not yet closed out)
+export async function getJobCompletionResult(platformSpineUrl, token, jobId) {
+  return request(platformSpineUrl, `/v1/jobs/${jobId}/completion/result`, { token });
+}
+
+// quotation: edit creates a new version server-side (contractor only)
+export async function editQuotation(quotationUrl, token, quotationId, { lineItems, totalEstimate }) {
+  return request(quotationUrl, `/v1/quotations/${quotationId}`, {
+    method: "PATCH",
+    token,
+    body: { line_items: lineItems, total_estimate: totalEstimate },
+  });
+}
+
+// payments-data
+export async function listPayments(paymentsUrl, token) {
+  return request(paymentsUrl, "/v1/payments", { token });
+}
+
+export async function createRazorpayOrder(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/create-order`, {
+    method: "POST",
+    token,
+  });
+}
+
+// resource-network: pilot service areas
+export async function listServiceAreas(resourceNetworkUrl, token) {
+  return request(resourceNetworkUrl, "/v1/service-areas", { token });
+}
+
+export async function upsertServiceArea(resourceNetworkUrl, token, area) {
+  return request(resourceNetworkUrl, "/v1/service-areas", {
+    method: "POST",
+    token,
+    body: area,
+  });
+}
+
+// 404 (outside every configured area) is the normal outcome outside the
+// pilot villages - callers should treat it as "no area", not an error.
+export async function lookupServiceArea(resourceNetworkUrl, token, { lat, lng }) {
+  return request(
+    resourceNetworkUrl,
+    `/v1/service-areas/lookup?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
+    { token }
+  );
 }

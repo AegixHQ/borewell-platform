@@ -24,6 +24,7 @@ from app.gateway.razorpay_client import (
     get_razorpay_config,
     verify_webhook_signature,
 )
+from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.logging_config import configure_logging
 from app.payments.quotation_client import (
     QuotationAccessDenied,
@@ -39,13 +40,17 @@ app = FastAPI(
     title="payments-data",
     version="0.1.0",
     description="Payments and Split Settlement, Data and Analytics",
+    **api_docs_kwargs(),
 )
 
 _ALLOWED_ORIGINS = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175").split(",")
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    ).split(",")
     if o.strip()
 ]
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -68,7 +73,9 @@ app.add_middleware(GZipMiddleware)
 # no-request-body-touched guarantee as the GZipMiddleware note above
 # applies here too, checked for the same reason: this instrumentator only
 # reads response status/timing, never the request or response body.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, dependencies=[Depends(metrics_guard)]
+)
 
 # Schema is managed by Alembic (`alembic upgrade head`), not by the app.
 
@@ -82,7 +89,29 @@ def _error_body(code: str, message: str, request: Request) -> dict:
 async def add_trace_id(request: Request, call_next):
     request.state.trace_id = str(uuid.uuid4())
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Anything that escapes the route or a dependency (a DB outage in
+        # get_db, say) used to bypass this middleware entirely: Starlette
+        # answered with a bare 500 and nothing was logged here. Log the real
+        # traceback server-side, keyed by trace_id, and return the shared
+        # error format with NO internals - the client gets only the trace_id
+        # to quote to support.
+        logger.exception(
+            "request.failed method=%s path=%s",
+            request.method,
+            request.url.path,
+            extra={"trace_id": request.state.trace_id},
+        )
+        response = JSONResponse(
+            status_code=500,
+            content=_error_body(
+                "INTERNAL_ERROR",
+                "An unexpected error occurred. Quote the trace_id if you contact support.",
+                request,
+            ),
+        )
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Trace-Id"] = request.state.trace_id
     # Deliberately never logs the request or response BODY - only method,
@@ -152,6 +181,44 @@ def _payment_to_response(p: models.Payment) -> schemas.PaymentResponse:
     )
 
 
+def _idempotent_replay(
+    existing: models.Payment, claims: dict, payload: schemas.PaymentCreateRequest
+) -> schemas.PaymentResponse:
+    """A replayed idempotency key returns the original payment - but only to
+    the caller who made it, and only for the SAME request. Otherwise the key
+    was never "theirs": answering with the stored payment would hand another
+    customer's payment (job, quotation, amount, Razorpay order) to anyone who
+    knew or guessed a key, or silently return a payment for a different
+    quotation/amount than the one just asked for."""
+    same_request = (
+        existing.customer_id == claims["sub"]
+        and existing.job_id == str(payload.job_id)
+        and existing.quotation_id == str(payload.quotation_id)
+        and existing.amount == payload.amount
+    )
+    if not same_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "This idempotency key was already used for a different request.",
+            },
+        )
+    return _payment_to_response(existing)
+
+
+def _lock_quotation_for_payment(db: Session, quotation_id: str) -> None:
+    """Serialise concurrent payment creation for ONE quotation. A double-tap
+    sends two requests with different idempotency keys; without this both
+    pass the open-payment check below and two charges get created. The lock
+    is transaction-scoped (released on commit/rollback). Postgres only -
+    SQLite, used by the unit tests, has a single writer anyway. Deliberately
+    NOT a unique index: a late webhook capturing an earlier failed attempt
+    must still be recordable (a constraint violation there would lose it)."""
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": quotation_id})
+
+
 @app.post("/v1/payments", response_model=schemas.PaymentResponse, status_code=201)
 def create_payment(
     payload: schemas.PaymentCreateRequest,
@@ -169,7 +236,7 @@ def create_payment(
         .first()
     )
     if existing:
-        return _payment_to_response(existing)
+        return _idempotent_replay(existing, claims, payload)
 
     auth_header = request.headers.get("Authorization", "")
     try:
@@ -234,6 +301,33 @@ def create_payment(
             },
         )
 
+    # One live payment per quotation. A fresh idempotency key must not open a
+    # second charge for something already paid, or while a checkout is open.
+    _lock_quotation_for_payment(db, str(payload.quotation_id))
+    open_payment = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.quotation_id == str(payload.quotation_id),
+            models.Payment.status.in_(("pending", "completed")),
+        )
+        .order_by(models.Payment.created_at)
+        .first()
+    )
+    if open_payment is not None:
+        if open_payment.status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "ALREADY_PAID",
+                    "message": "This quotation has already been paid.",
+                },
+            )
+        # pending: the customer is retrying checkout - continue that attempt
+        # (POST /create-order is re-entrant and returns the same order)
+        response = _payment_to_response(open_payment)
+        db.rollback()  # releases the advisory lock
+        return response
+
     payment = models.Payment(
         job_id=str(payload.job_id),
         quotation_id=str(payload.quotation_id),
@@ -255,7 +349,7 @@ def create_payment(
             .filter(models.Payment.idempotency_key == payload.idempotency_key)
             .first()
         )
-        return _payment_to_response(existing)
+        return _idempotent_replay(existing, claims, payload)
     db.refresh(payment)
     return _payment_to_response(payment)
 
@@ -416,6 +510,12 @@ def fail_payment(
     return _payment_to_response(payment)
 
 
+# See the replay-window comment inside razorpay_webhook. 25h = Razorpay's 24h
+# retry horizon + 1h margin; the future-skew allowance absorbs clock drift.
+_WEBHOOK_MAX_AGE_SECONDS = int(os.getenv("WEBHOOK_MAX_AGE_SECONDS", str(25 * 3600)))
+_WEBHOOK_MAX_FUTURE_SKEW_SECONDS = 300
+
+
 @app.post("/v1/payments/webhook")
 async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     """Real, primary payment-confirmation path - see app/gateway/
@@ -472,6 +572,28 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
 
     payload = await request.json()
     event = payload.get("event")
+
+    # Replay window. Razorpay retries a failed delivery for up to 24 hours
+    # (https://razorpay.com/docs/webhooks/ - "re-tried ... for 24 hours"), so
+    # the window must be WIDER than that or a legitimate retry after our own
+    # downtime would be dropped. That makes this a backstop against very old
+    # captured payloads, not the primary defence: status-based idempotency
+    # below is what actually makes a replay harmless. Stale events get a 200
+    # (not a 4xx) so a mistaken rejection can never push Razorpay's retry
+    # cycle towards disabling the webhook. A payload with no usable
+    # created_at is processed normally - never reject on a field we
+    # cannot rely on being present.
+    created_at = payload.get("created_at")
+    if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+        age_s = time.time() - created_at
+        if age_s > _WEBHOOK_MAX_AGE_SECONDS or age_s < -_WEBHOOK_MAX_FUTURE_SKEW_SECONDS:
+            logger.warning(
+                "razorpay.webhook.stale event=%s event_id=%s age_seconds=%s",
+                event,
+                event_id,
+                int(age_s),
+            )
+            return {"status": "ignored_stale", "event": event}
 
     # Unhandled event type: acknowledge with 200 rather than reject, so
     # Razorpay doesn't retry an event this endpoint has no reaction to -

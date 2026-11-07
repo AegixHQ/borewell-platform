@@ -145,6 +145,11 @@ paths:
           description: Only customers may approve
         '404':
           description: Quotation not found
+        '409':
+          description: |
+            QUOTATION_SUPERSEDED - a newer version exists; review the latest version.
+            QUOTATION_STATE_CONFLICT - already rejected, so it can no longer be approved.
+            (Approving an already-approved quotation is idempotent and returns 200.)
   /v1/quotations/{quotation_id}/reject:
     post:
       summary: Customer rejects a quotation
@@ -164,6 +169,11 @@ paths:
           description: Only customers may reject
         '404':
           description: Quotation not found
+        '409':
+          description: |
+            QUOTATION_SUPERSEDED - a newer version exists.
+            QUOTATION_STATE_CONFLICT - already approved (approval is binding; ask the contractor for a new version).
+            (Rejecting an already-rejected quotation is idempotent and returns 200.)
 components:
   schemas:
     PricingRuleInput:
@@ -195,7 +205,7 @@ components:
         quotation_id: { type: string, format: uuid }
         job_id: { type: string, format: uuid }
         version: { type: integer }
-        status: { type: string, enum: [draft, sent, approved, rejected] }
+        status: { type: string, enum: [draft, sent, approved, rejected, superseded], description: "'superseded' is derived on read: a newer version of the same job's quotation exists. It cannot be approved, rejected, or paid." }
         estimated_depth_range:
           type: object
           properties:

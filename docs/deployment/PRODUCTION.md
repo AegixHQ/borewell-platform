@@ -194,19 +194,13 @@ for port 8004, or whatever port a reverse proxy in front of it uses).
 
 ## 7. HTTPS (do this before real customer data touches this VM)
 
-Not automated here - deliberately, since certificate/domain setup is
-specific to your registrar and hosting provider. The gateway
-(`docker-compose.prod.yml`'s `gateway` service, Traefik) is where this
-belongs once you're ready - Traefik has built-in ACME/Let's Encrypt
-support, so this is a config addition to the existing `gateway` service
-(a `certificatesResolvers` block plus a `websecure` entrypoint on 443),
-not a new piece of infrastructure. The alternative - fronting the whole
-VM with a CDN/proxy like Cloudflare that terminates TLS before traffic
-reaches port 80 - also works and requires no gateway config changes at
-all, just a DNS/proxy setup outside this repo. `docs/BACKEND_INTEGRATION.md`
-section 7 has the same two options from the frontend-integrator's side,
-if you need to coordinate this with whoever's building the separate
-frontend repo. Once either is in place:
+The base stack serves plain HTTP. The supported route is the opt-in TLS overlay
+`docker-compose.tls.yml` (Traefik + Let's Encrypt, HTTP->HTTPS redirect, security
+headers); the exact commands and the staging-CA first run are under "HTTPS (Let's
+Encrypt)" in *Security hardening notes* below. Fronting the VM with a CDN/proxy
+like Cloudflare that terminates TLS also works with no gateway changes.
+`docs/BACKEND_INTEGRATION.md` section 7 has the frontend-integrator's view. Once
+either is in place:
 - Update `PUBLIC_URL` in `.env.prod` to the `https://` URL - this is read
   at container start by whichever services use it (see
   `.env.prod.example`'s own comment on that var for exactly which ones),
@@ -289,3 +283,71 @@ know if something is broken at pilot scale, per that same section.
   deferred per Architecture doc section 10/12, same reasoning repeated
   throughout this document: don't solve a scale problem that doesn't
   exist yet.
+
+---
+
+## Security hardening notes
+
+**Creating the first admin.** `POST /v1/auth/register` accepts `customer`,
+`contractor` and `resource_owner` only - it cannot create an admin. Set
+`BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `.env.prod`, restart
+`platform-spine`, then **delete the password line**. It is create-only: an
+existing account is never modified or promoted. Manual alternative:
+`docker compose -f docker-compose.prod.yml exec platform-spine python -m app.bootstrap`.
+
+**Auth rate limits.** Login is limited to 10/minute and registration to
+10/hour per client IP (`RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER`). Counters
+are in-process, so they are per replica - move to Redis before running more
+than one `platform-spine` container. `RATE_LIMIT_TRUST_FORWARDED_FOR` must stay
+`0` while ports 8001-8004 are reachable directly (a direct caller can forge
+`X-Forwarded-For`). If you later route everything through Traefik and close
+those ports, set it to `1`; with it left at `0` behind the gateway, all users
+share Traefik's IP and therefore one shared limit.
+
+**Containers run as an unprivileged user** (`borewell`, uid 10001), not root.
+
+**Webhook replay window.** `POST /v1/payments/webhook` ignores (HTTP 200,
+`ignored_stale`) events whose `created_at` is older than 25h
+(`WEBHOOK_MAX_AGE_SECONDS`) or more than 5 minutes in the future. Razorpay
+retries failed deliveries for 24h, so the window must stay above that. The real
+replay protection is the status-based idempotency in the handler.
+
+**Unhandled errors** are logged server-side as `request.failed` (with
+traceback and `trace_id`) and returned to clients as
+`{"error": {"code": "INTERNAL_ERROR", ...}}` with no internals.
+
+**Contractor accounts.** Public sign-up for the `contractor` role is closed by
+default (`ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0`) because a contractor can see
+every customer's jobs and payments. Create the pilot contractor with
+`docker compose -f docker-compose.prod.yml exec -it platform-spine python -m
+app.bootstrap create-user --role contractor --email owner@example.com`
+(prompts for the password; create-only - an existing account is never changed).
+
+**Gateway-only mode.** Once every client goes through Traefik, set
+`SERVICE_BIND_ADDR=127.0.0.1` (the service ports stop being reachable from
+outside) and `RATE_LIMIT_TRUST_FORWARDED_FOR=1` (per-client rate limits behind
+the gateway). Do both together: the second is only safe if the first holds.
+
+**Optional `/metrics` token.** Set `METRICS_TOKEN` on a service to require
+`Authorization: Bearer <token>`; give Prometheus the same value with
+`authorization: { credentials_file: ... }` in `infra/monitoring/prometheus.yml`.
+Unset, `/metrics` stays open (and reachable on the published ports).
+
+See `SECURITY.md` for the full list of what was fixed and what remains.
+
+**HTTPS (Let's Encrypt).** The base stack serves plain HTTP. For real users, add
+the TLS overlay:
+
+    docker compose -f docker-compose.prod.yml -f docker-compose.tls.yml \
+      --env-file .env.prod up -d
+
+Set `PUBLIC_DOMAIN` and `LETSENCRYPT_EMAIL` in `.env.prod` first, point the
+domain's DNS A record at the VM, and keep ports 80 and 443 open (80 is used for
+the certificate challenge and then redirects to HTTPS). Do a first run against
+the staging CA (`LETSENCRYPT_CA_SERVER`, see `.env.prod.example`), then remove
+that line, delete the `traefik_letsencrypt` volume, and start again for a real
+certificate. Certificates renew automatically. Responses get HSTS (starts at one
+day - raise `stsSeconds` in `infra/gateway/dynamic/tls-headers.yml` to a year
+once HTTPS has worked for a few days), nosniff, frame-deny and no-referrer.
+Then point the apps at `https://<PUBLIC_DOMAIN>` (EAS `production` profile) and
+set `ALLOWED_ORIGINS` to the real web origin.

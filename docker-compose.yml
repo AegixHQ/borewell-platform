@@ -4,7 +4,7 @@ services:
   postgres-platform-spine:
     image: docker.io/library/postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: platform_spine
       POSTGRES_USER: borewell
@@ -21,7 +21,7 @@ services:
   postgres-quotation:
     image: docker.io/library/postgres:16-alpine
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: quotation
       POSTGRES_USER: borewell
@@ -38,7 +38,7 @@ services:
   postgres-resource-network:
     image: docker.io/library/postgres:16-alpine
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     environment:
       POSTGRES_DB: resource_network
       POSTGRES_USER: borewell
@@ -55,7 +55,7 @@ services:
   postgres-payments-data:
     image: docker.io/library/postgres:16-alpine
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"
     environment:
       POSTGRES_DB: payments_data
       POSTGRES_USER: borewell
@@ -72,7 +72,7 @@ services:
   redis:
     image: docker.io/library/redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -93,6 +93,13 @@ services:
       JWT_EXPIRY_MINUTES: "60"
       ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175"
       QUOTATION_SERVICE_URL: http://quotation:8000
+      # Dev/CI only. Public registration cannot create an admin, so the
+      # integration test logs in as this bootstrapped one (app/bootstrap.py).
+      BOOTSTRAP_ADMIN_EMAIL: admin@borewell.local
+      BOOTSTRAP_ADMIN_PASSWORD: dev-only-admin-password
+      # Effectively off locally: repeated test runs from one IP must not 429.
+      RATE_LIMIT_LOGIN: 1000/minute
+      RATE_LIMIT_REGISTER: 1000/hour
     ports:
       - "8001:8000"
 

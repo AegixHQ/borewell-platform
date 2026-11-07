@@ -22,6 +22,10 @@ on:
       - 'apps/borewell-native/**'
       - '.github/workflows/ci-borewell-native.yml'
 
+# Least privilege: no job here pushes code, comments, or publishes anything.
+permissions:
+  contents: read
+
 jobs:
   lint-and-bundle:
     runs-on: ubuntu-latest

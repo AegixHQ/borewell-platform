@@ -1,0 +1,13 @@
+# Loaded by the gateway only when docker-compose.tls.yml is used.
+# Security headers added to every HTTPS response.
+http:
+  middlewares:
+    secure-headers:
+      headers:
+        # HSTS makes browsers refuse plain HTTP for this domain for this long.
+        # It is sticky, so start short. Once HTTPS has worked for a few days,
+        # raise it to 31536000 (one year). Sent over HTTPS only.
+        stsSeconds: 86400
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer

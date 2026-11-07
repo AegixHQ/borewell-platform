@@ -11,4 +11,12 @@ JWT_ALGORITHM = "HS256"
 
 
 def decode_access_token(token: str) -> dict:
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    return jwt.decode(
+        token,
+        JWT_SECRET,
+        algorithms=[JWT_ALGORITHM],
+        # A validly-signed token missing any of these is malformed: reject it here
+        # rather than letting a KeyError surface later as a 500, and never
+        # accept a token that cannot expire.
+        options={"require": ["exp", "sub", "role"]},
+    )
