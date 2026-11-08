@@ -1,0 +1,62 @@
+name: Build demo APK
+
+# Builds an installable Android APK of apps/borewell-native in DEMO mode
+# (built-in sample data, no backend, no server, no Expo account needed).
+# Run it from the Actions tab ("Run workflow"); download the APK from the
+# run's Artifacts section.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [demo-apk]
+
+permissions:
+  contents: write   # only to attach the APK to a draft release
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/borewell-native
+    env:
+      EXPO_PUBLIC_DEMO: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci --no-audit --no-fund
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Allow slow Gradle download
+        run: sed -i 's/^networkTimeout=.*/networkTimeout=180000/' android/gradle/wrapper/gradle-wrapper.properties
+      - name: Build the APK (arm64 phones)
+        working-directory: apps/borewell-native/android
+        run: |
+          # services.gradle.org occasionally answers 504; retry the whole build.
+          for attempt in 1 2 3 4 5; do
+            ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a && exit 0
+            echo "Attempt $attempt failed; retrying in 45s"; sleep 45
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: borewell-demo-apk
+          path: apps/borewell-native/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Attach the APK to a draft release (easy download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/borewell-native/android/app/build/outputs/apk/release
+        run: |
+          cp app-release.apk borewell-demo.apk
+          gh release create "demo-apk-${{ github.run_number }}" borewell-demo.apk \
+            --draft --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "Borewell demo APK (build ${{ github.run_number }})" \
+            --notes "Demo-mode Android APK: built-in sample data, no backend. Install on an arm64 Android phone."

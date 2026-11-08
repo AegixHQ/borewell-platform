@@ -146,7 +146,7 @@ def register_and_login(role, label):
 def login_bootstrapped_admin():
     """Admin accounts cannot be self-registered; docker-compose.yml bootstraps
     one for dev/CI via BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD."""
-    email = os.getenv("INTEGRATION_ADMIN_EMAIL", "admin@borewell.local")
+    email = os.getenv("INTEGRATION_ADMIN_EMAIL", "admin@example.com")
     password = os.getenv("INTEGRATION_ADMIN_PASSWORD", "dev-only-admin-password")
     login = _request(
         "POST", f"{PLATFORM_SPINE_URL}/v1/auth/login", json={"email": email, "password": password}
