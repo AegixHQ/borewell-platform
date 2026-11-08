@@ -49,6 +49,7 @@ This also deletes the demo data; the next start begins fresh.
 
 - *"Docker is not running"*: open Docker Desktop and wait until it says it is running.
 - *Page says "Failed to fetch" or shows no data*: the backend is not up yet. Wait a minute, check `docker compose ps`, reload.
+- *"Failed to fetch" only after login attempts*: the app must run on port **8081** (the backend only allows that address). If it says 8081 is busy, close the other program and start again.
 - *Port already in use* (8001-8004, 8081, 5432-ish): close whatever uses it, or run `stop-demo` first.
 - *Logs*: `docker compose logs -f`.
 
