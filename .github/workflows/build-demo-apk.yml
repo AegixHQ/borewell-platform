@@ -11,7 +11,7 @@ on:
     branches: [demo-apk]
 
 permissions:
-  contents: read
+  contents: write   # only to attach the APK to a draft release
 
 jobs:
   apk:
@@ -50,3 +50,13 @@ jobs:
           name: borewell-demo-apk
           path: apps/borewell-native/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+      - name: Attach the APK to a draft release (easy download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/borewell-native/android/app/build/outputs/apk/release
+        run: |
+          cp app-release.apk borewell-demo.apk
+          gh release create "demo-apk-${{ github.run_number }}" borewell-demo.apk \
+            --draft --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "Borewell demo APK (build ${{ github.run_number }})" \
+            --notes "Demo-mode Android APK: built-in sample data, no backend. Install on an arm64 Android phone."
