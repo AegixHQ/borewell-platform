@@ -34,6 +34,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Generate the Android project
         run: npx expo prebuild --platform android --no-install
+      - name: Allow slow Gradle download
+        run: sed -i 's/^networkTimeout=.*/networkTimeout=180000/' android/gradle/wrapper/gradle-wrapper.properties
       - name: Build the APK (arm64 phones)
         working-directory: apps/borewell-native/android
         run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
