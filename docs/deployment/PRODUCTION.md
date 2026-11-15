@@ -1,5 +1,10 @@
 # Production Deployment Runbook
 
+> **Fast path:** [GO-LIVE.md](GO-LIVE.md) — `make prod-init`, fill in `.env.prod`,
+> `make prod-check`, `make prod-deploy`. This document is the background and
+> the manual route. Where it says `PUBLIC_URL`, read `PUBLIC_DOMAIN` (a bare
+> hostname; the URL is always `https://<PUBLIC_DOMAIN>`).
+
 **Scope:** single-VM deployment, per `Borewell_03_Architecture.md` section 10
 and the Development Plan's Milestone 5. This is deliberately the simplest
 thing that actually works for a single-contractor pilot - no Kubernetes, no
@@ -35,8 +40,8 @@ that's `docker-compose.yml` (dev), not this file.
   not heavy individually, but real headroom matters more than the
   absolute minimum that technically boots.
 - A domain name pointed at the VM's IP, OR just the VM's public IP as an
-  interim step (see `.env.prod.example`'s `PUBLIC_URL` comment - HTTPS is
-  step 7 below, not required to get a first deploy running).
+  interim step (HTTPS needs a domain: Let's Encrypt cannot issue for a bare IP,
+  so the one-command path in GO-LIVE.md requires `PUBLIC_DOMAIN`).
 - Port 80 (and 443 once TLS is set up, step 7) reachable from the
   internet - this is the gateway's port, and per
   `docs/BACKEND_INTEGRATION.md` section 2, the one base URL whoever's
@@ -68,8 +73,8 @@ Edit `.env.prod` and fill in every `CHANGE_ME`. The file itself documents
 exactly how to generate each value (`openssl rand -base64 ...`) and why each
 one exists - read it, don't skip past the comments.
 
-**The one thing worth getting right the first time:** `PUBLIC_URL` and
-`ALLOWED_ORIGINS` must both reflect where this VM is actually reachable at
+**The one thing worth getting right the first time:** `PUBLIC_DOMAIN` (and
+`ALLOWED_ORIGINS`, which defaults to `https://<PUBLIC_DOMAIN>`) must reflect where this VM is actually reachable at
 - not `localhost`. `ALLOWED_ORIGINS` needs the real deployed origin of
 whatever frontend is calling this backend from a browser context (the
 separate frontend repo's deployed URL - native mobile isn't affected by
@@ -87,18 +92,17 @@ it.
 
 ### Razorpay setup (one-time, in the Razorpay Dashboard)
 
-Do this **after** step 5 (the stack is up and `PUBLIC_URL` is actually
-reachable), not before - registering a webhook URL against an address
-that isn't serving traffic yet just means re-doing this step.
+Razorpay needs the webhook secret you create here inside `.env.prod`, so
+create the webhook first (its URL only has to work once the stack is up).
 
 1. `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`: Dashboard → Settings → API
    Keys. Generate a **live** mode key pair for a real deployment, not a
    test-mode one - the two look similar (`rzp_live_...` vs
    `rzp_test_...`), so check the prefix before pasting into `.env.prod`.
-2. Bring the stack up (step 5) so `<PUBLIC_URL>:8004` is reachable.
+2. Bring the stack up (step 5) so `https://<PUBLIC_DOMAIN>` is reachable.
 3. Dashboard → Settings → Webhooks → Add New Webhook. URL:
-   `http://<PUBLIC_URL>:8004/v1/payments/webhook` (or through a reverse
-   proxy once one exists - see step 7). Enable the `payment.captured` and
+   `https://<PUBLIC_DOMAIN>/v1/payments/webhook` (through the gateway; `make
+   prod-check` prints it). Enable the `payment.captured` and
    `payment.failed` events at minimum - other events are safely ignored
    by the endpoint (see `services/payments-data/app/main.py`'s
    `razorpay_webhook` handler), so enabling more than these two is
@@ -142,6 +146,11 @@ container fails to start rather than serving against a stale/missing
 schema"). You do not need a separate migration step for a fresh deploy.
 
 ## 6. Verify
+
+`make prod-smoke` runs the public-facing checks in one go (routes, TLS, HSTS,
+redirect, closed ports, Google/Razorpay state). The per-service `curl`s below
+only work **on the server itself** when `SERVICE_BIND_ADDR=127.0.0.1` (the
+go-live default).
 
 ```bash
 curl http://<your-domain-or-ip>:8001/healthz   # platform-spine
@@ -190,7 +199,7 @@ first - the most common causes are `RAZORPAY_WEBHOOK_SECRET` not matching
 what's configured in the Razorpay dashboard (a stale/regenerated secret),
 or the webhook URL registered in the dashboard not actually being
 reachable from Razorpay's servers (check firewall/security group rules
-for port 8004, or whatever port a reverse proxy in front of it uses).
+for ports 80/443).
 
 ## 7. HTTPS (do this before real customer data touches this VM)
 
@@ -201,10 +210,8 @@ Encrypt)" in *Security hardening notes* below. Fronting the VM with a CDN/proxy
 like Cloudflare that terminates TLS also works with no gateway changes.
 `docs/BACKEND_INTEGRATION.md` section 7 has the frontend-integrator's view. Once
 either is in place:
-- Update `PUBLIC_URL` in `.env.prod` to the `https://` URL - this is read
-  at container start by whichever services use it (see
-  `.env.prod.example`'s own comment on that var for exactly which ones),
-  not baked into any build, so a restart (not a rebuild) picks it up.
+- Set `PUBLIC_DOMAIN` and `LETSENCRYPT_EMAIL` in `.env.prod`; `make
+  prod-deploy` always uses the TLS overlay.
 - The 4 direct backend ports (8001-8004) stay HTTP-only unless you
   explicitly front each of them too - most setups only need the gateway's
   port TLS-terminated, since that's the one meant to be the actual public
@@ -275,10 +282,9 @@ know if something is broken at pilot scale, per that same section.
   for a job; nothing routes any portion of it onward to a resource_owner
   automatically). `docs/adr/0004`'s "Consequences" section flags this as
   a real, undecided gap in the marketplace model, not an oversight here.
-- **Automated backups** for the 4 Postgres volumes - a real, separate
-  operational decision (frequency, retention, off-VM storage) that
-  deserves its own consideration once there's real pilot data worth
-  losing, not a default assumed into this runbook.
+- **Off-VM backups.** `make prod-backup` dumps all four databases locally
+  (schedule it with cron, see `infra/backup/README.md`); copying them off the
+  server is still your decision.
 - **Zero-downtime deploys, managed orchestration, multi-VM** - explicitly
   deferred per Architecture doc section 10/12, same reasoning repeated
   throughout this document: don't solve a scale problem that doesn't
