@@ -26,10 +26,32 @@ RAZORPAY_KEY = re.compile(r"^rzp_(live|test)_[A-Za-z0-9]{6,}$")
 GOOGLE_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
 
 
-def check(env: dict, file_mode=None):
+def example_values(template: Path) -> dict:
+    """KEY -> value from the `# Example: KEY=value` lines of .env.prod.example,
+    so the examples shown to the user can never be deployed by accident (and
+    cannot drift from what this check rejects)."""
+    found = {}
+    if template.exists():
+        for line in template.read_text().splitlines():
+            match = re.match(r"^#\s*Example:\s*([A-Z0-9_]+)=(.+)$", line.strip())
+            if match:
+                found[match.group(1)] = match.group(2).strip()
+    return found
+
+
+def check(env: dict, file_mode=None, examples=None):
     """Returns (errors, warnings, info) as lists of strings."""
     errors, warnings, info = [], [], []
     get = lambda k: env.get(k, "").strip()  # noqa: E731
+
+    for key, example in (examples or {}).items():
+        if get(key) == example:
+            optional = key.startswith(("RAZORPAY_", "GOOGLE_", "BOOTSTRAP_"))
+            errors.append(f"{key} is still the example value from the template - replace it with "
+                          f"your real one{' (or blank it to switch the feature off)' if optional else ''}.")
+    for key in ("PUBLIC_DOMAIN", "LETSENCRYPT_EMAIL", "BOOTSTRAP_ADMIN_EMAIL", "ALLOWED_ORIGINS"):
+        if "yourdomain" in get(key):
+            errors.append(f"{key} still contains 'yourdomain' - use your real domain.")
 
     def secret(key, minimum):
         value = get(key)
@@ -154,7 +176,8 @@ def main(argv=None) -> int:
         print(f"ERROR: {path} not found - run `make prod-init` first.")
         return 1
     env = envfile.load(path)
-    errors, warnings, info = check(env, os.stat(path).st_mode)
+    template = Path(__file__).resolve().parents[2] / ".env.prod.example"
+    errors, warnings, info = check(env, os.stat(path).st_mode, example_values(template))
 
     if args.dns and env.get("PUBLIC_DOMAIN") and not errors:
         try:

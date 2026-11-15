@@ -74,6 +74,30 @@ def test_template_as_shipped_is_rejected():
         assert key in text
 
 
+TEMPLATE = ROOT / ".env.prod.example"
+
+
+def test_every_example_in_the_template_has_the_right_shape_but_is_rejected():
+    examples = preflight.example_values(TEMPLATE)
+    # the ones a user is most likely to paste straight in
+    for key in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET",
+                "GOOGLE_CLIENT_IDS", "PUBLIC_DOMAIN", "LETSENCRYPT_EMAIL",
+                "BOOTSTRAP_ADMIN_EMAIL", "BOOTSTRAP_ADMIN_PASSWORD"):
+        assert key in examples, key
+        errs = preflight.check(good_env(**{key: examples[key]}), examples=examples)[0]
+        assert any(key in e and ("example" in e or "yourdomain" in e) for e in errs), (key, errs)
+    # ...and an example KEY_ID is format-valid, so only the example check stops it
+    assert preflight.RAZORPAY_KEY.match(examples["RAZORPAY_KEY_ID"])
+    assert preflight.GOOGLE_ID.match(examples["GOOGLE_CLIENT_IDS"])
+
+
+def test_real_values_pass_with_examples_loaded():
+    examples = preflight.example_values(TEMPLATE)
+    env = good_env(RAZORPAY_KEY_ID="rzp_test_Zq81Lm03XvRtPw", RAZORPAY_KEY_SECRET="k" * 24,
+                   RAZORPAY_WEBHOOK_SECRET="hook-secret-9x")
+    assert preflight.check(env, examples=examples)[0] == []
+
+
 def test_blank_origins_default_to_the_domain():
     assert errors_for(ALLOWED_ORIGINS="") == []
 

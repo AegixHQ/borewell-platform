@@ -23,12 +23,12 @@ This writes `.env.prod` (mode 600) and **generates the database password, JWT se
 
 | Setting | Where it comes from |
 |---|---|
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay Dashboard → Settings → API Keys. **Start with `rzp_test_` keys.** |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay Dashboard → Settings → API Keys. **Start with `rzp_test_` keys.** Looks like `rzp_test_AbCdEf1234GhIj` / a 24-character secret. |
 | `RAZORPAY_WEBHOOK_SECRET` | Dashboard → Settings → Webhooks → Add New Webhook. URL `https://api.yourdomain.in/v1/payments/webhook`, events `payment.captured` + `payment.failed`, and a secret **you** choose (8+ chars). Paste the same secret here. |
-| `GOOGLE_CLIENT_IDS` | Step 6 below. |
+| `GOOGLE_CLIENT_IDS` | Step 6 below. Looks like `123456789012-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com`. |
 | `BOOTSTRAP_ADMIN_EMAIL` / `_PASSWORD` | Your admin login (12+ char password). Delete the password line after the first deploy. |
 
-Leave Razorpay or Google blank to switch that feature off. Razorpay is all-three-or-none.
+Every variable in `.env.prod` has a comment saying what it is, where to get it, and a made-up `Example:` of the format. `make prod-check` rejects an example pasted in unchanged. Leave Razorpay or Google blank to switch that feature off. Razorpay is all-three-or-none.
 
 ## 3. Check it
 

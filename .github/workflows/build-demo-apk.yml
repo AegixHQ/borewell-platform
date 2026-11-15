@@ -11,6 +11,9 @@ name: Build demo APK
 #     plain http - not for production).
 #   - DEMO (the default, and every push to demo-apk): built-in sample data, no
 #     backend, simulated payments, no Google sign-in.
+# Variable values look like (made-up examples):
+#   API_DOMAIN            = api.yourdomain.in
+#   GOOGLE_WEB_CLIENT_ID  = 123456789012-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com
 # Google's "Continue with Google" appears in a live build when a Google *Web*
 # client ID is given. The APK lands on a draft release; its notes include the
 # signing key's SHA-1, which Google's Android OAuth client needs.
