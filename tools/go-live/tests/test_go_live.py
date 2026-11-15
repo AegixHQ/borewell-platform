@@ -122,6 +122,11 @@ def test_bad_origins(origins):
     assert any("ALLOWED_ORIGINS" in e for e in errors_for(ALLOWED_ORIGINS=origins))
 
 
+@pytest.mark.parametrize("domain", ["34-1-2-3.sslip.io", "borewell.duckdns.org"])
+def test_free_hostnames_are_accepted(domain):
+    assert errors_for(PUBLIC_DOMAIN=domain, ALLOWED_ORIGINS="") == []
+
+
 def test_razorpay_half_configured_is_error():
     errs = errors_for(RAZORPAY_KEY_ID="rzp_test_abcdef123456")
     assert any("half-configured" in e for e in errs)

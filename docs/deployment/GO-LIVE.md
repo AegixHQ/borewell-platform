@@ -10,10 +10,23 @@ generated, defaulted or checked for you. Details and background:
 - A domain you control, e.g. `api.yourdomain.in`, with an **A record pointing at the server**. Open **ports 80 and 443** in the server's firewall — nothing else (`8001-8004` and Grafana stay private).
 - Optional: a Razorpay account (online payments), a Google Cloud project (Google sign-in). Without them the app runs with **cash payments and email/password sign-in**.
 
+## No domain yet? Start with a free hostname
+
+HTTPS needs a hostname (Let's Encrypt cannot issue certificates for a bare IP, Android blocks plain `http://` in release apps, and Razorpay/Google expect HTTPS), but it does **not** have to be one you buy. Two free options that work with everything below, unchanged:
+
+- **sslip.io** (zero sign-up): for a server at `34.1.2.3` use `PUBLIC_DOMAIN=34-1-2-3.sslip.io`. It resolves to that IP automatically. Fine for a first test; its certificates share a rate limit with every other sslip.io user, so it can occasionally refuse.
+- **DuckDNS** (free account at duckdns.org): pick `borewell.duckdns.org`, point it at the server's IP. More reliable for a pilot.
+
+Move to a real domain later without losing data: set the new `PUBLIC_DOMAIN`, `make prod-deploy` (new certificate; databases untouched), update the Razorpay webhook URL, change the GitHub variable `API_DOMAIN` and **rebuild and reinstall the APK** (the address is baked into the app).
+
+A free-trial VM is fine for the same reason: nothing in the repo is tied to one provider. Use 4 GB RAM if you can (it runs 4 databases, 4 services, Redis, the gateway and monitoring); give it a **static IP** so the hostname keeps working.
+
 ## 1. Get the code and create `.env.prod`
 
 ```bash
 git clone https://github.com/AegixHQ/borewell-platform.git && cd borewell-platform
+# until PR #21 is merged into main, main does not have the go-live work:
+git checkout fix/tls-overlay
 make prod-init DOMAIN=api.yourdomain.in EMAIL=you@yourdomain.in
 ```
 
