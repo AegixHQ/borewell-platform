@@ -60,11 +60,25 @@ HS256 pinned; bcrypt; no raw SQL; CORS credentials off.
    plugins; npm's "fix" is a downgrade to Expo 46). None ships in the app. The
    CI job fails on critical.
 
+10. **Cash confirmation has no per-contractor ownership.** Any contractor (or
+    admin) can confirm or reject any customer's cash payment, in line with
+    item 2: the data model has no link between a job and "its" contractor.
+    Confirming cash is a trust decision by the contractor; there is no receipt
+    or proof. Until jobs carry a contractor id, treat it as an honour system
+    and keep contractor accounts to people you know.
+11. **Google sign-in links accounts by verified email.** A first Google
+    sign-in for an existing password account links it and *retires the old
+    password*, so a stolen password can't be used afterwards. Admin accounts
+    cannot use Google sign-in. Google's keys are fetched from Google at
+    runtime; if that fetch fails the endpoint answers 502 rather than trusting
+    the token.
+
 ## Operator checklist for the pilot
 
 - [ ] TLS on: `docker-compose.tls.yml`, staging-CA run first (item 1 above)
 - [ ] `.env.prod`: strong `JWT_SECRET`, `BOOTSTRAP_ADMIN_*` set once then **removed**
 - [ ] Pilot contractor created via `create-user`; `ALLOW_PUBLIC_CONTRACTOR_REGISTRATION` stays `0`
 - [ ] If clients go through Traefik only: `SERVICE_BIND_ADDR=127.0.0.1` **and** `RATE_LIMIT_TRUST_FORWARDED_FOR=1`
-- [ ] Razorpay live keys only after test-mode end-to-end passes
+- [ ] Razorpay live keys only after test-mode end-to-end passes (pay with a Razorpay test card/UPI in the app and watch the job reach `payment`)
+- [ ] Google sign-in (optional): `GOOGLE_CLIENT_IDS` set to the Web client ID; Android OAuth client has the release key's SHA-1
 - [ ] Release app built with EAS `production` profile (https URLs, `EXPO_PUBLIC_DEMO=0`)

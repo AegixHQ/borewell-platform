@@ -204,6 +204,8 @@ services:
       #   platform-spine python -m app.bootstrap create-user --role contractor --email <email>
       # (or set this to 1 just long enough for them to register, then back to 0).
       ALLOW_PUBLIC_CONTRACTOR_REGISTRATION: ${ALLOW_PUBLIC_CONTRACTOR_REGISTRATION:-0}
+      # Empty = Google sign-in off (POST /v1/auth/google answers 503).
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
     ports:
       - "${SERVICE_BIND_ADDR:-0.0.0.0}:8001:8000"
     healthcheck:

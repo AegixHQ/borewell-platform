@@ -147,7 +147,7 @@ Register as a customer or resource owner from the registration screen (contracto
 | 4️⃣ | 🏗️ **Resource Owner** | Accepts or rejects the request in **Booking Requests** |
 | 5️⃣ | 👷 **Contractor** | Generates a quotation — **location-aware** if the job falls inside a configured pilot service area, otherwise the contractor's flat assumption |
 | 6️⃣ | 👤 **Customer** | Reviews the quote (depth range + confidence badge are *always* shown, per `UI/UX §7`) and approves it |
-| 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** — `payments-data` creates the order, the signed webhook confirms it (needs live keys in production — see `PRODUCTION.md §4`) |
+| 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** (server-verified signature, webhook as backup — needs Razorpay keys, see `PRODUCTION.md §4`) **or in cash**, which only counts once a contractor confirms receipt. Sign-in is email/password or **Google** (optional, `GOOGLE_CLIENT_IDS`) |
 | 8️⃣ | 👷 **Contractor** | Advances the job through its lifecycle, logs actual depth/cost at completion — variance is computed automatically |
 
 ---

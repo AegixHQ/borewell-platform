@@ -1,12 +1,27 @@
 name: Build demo APK
 
-# Builds an installable Android APK of apps/borewell-native in DEMO mode
-# (built-in sample data, no backend, no server, no Expo account needed).
-# Run it from the Actions tab ("Run workflow"); download the APK from the
-# run's Artifacts section.
+# Builds an installable Android APK of apps/borewell-native, no Expo account
+# needed.
+#   - Default (and every push to demo-apk): DEMO mode - built-in sample data,
+#     no backend, simulated payments, no Google sign-in.
+#   - Run workflow with `lan_host` set (e.g. 192.168.1.50): a LIVE build that
+#     talks to the four services on that machine (ports 8001-8004, plain
+#     http - fine on a home network, not for production), with real Razorpay
+#     Checkout and, if `google_web_client_id` is given, "Continue with Google".
+# The APK lands on a draft release; the release notes include the signing
+# key's SHA-1, which Google's Android OAuth client needs.
 
 on:
   workflow_dispatch:
+    inputs:
+      lan_host:
+        description: "LIVE build: IP of the machine running the services (blank = demo build)"
+        required: false
+        default: ""
+      google_web_client_id:
+        description: "LIVE build: Google *Web application* OAuth client ID (blank = no Google button)"
+        required: false
+        default: ""
   push:
     branches: [demo-apk]
 
@@ -21,7 +36,9 @@ jobs:
       run:
         working-directory: apps/borewell-native
     env:
-      EXPO_PUBLIC_DEMO: "1"
+      EXPO_PUBLIC_DEMO: ${{ inputs.lan_host == '' && '1' || '0' }}
+      EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${{ inputs.google_web_client_id }}
+      LAN_HOST: ${{ inputs.lan_host }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,8 +49,21 @@ jobs:
           distribution: temurin
           java-version: 17
       - run: npm ci --no-audit --no-fund
+      - name: Point a live build at the LAN services
+        if: env.LAN_HOST != ''
+        run: |
+          {
+            echo "EXPO_PUBLIC_PLATFORM_SPINE_URL=http://$LAN_HOST:8001"
+            echo "EXPO_PUBLIC_QUOTATION_URL=http://$LAN_HOST:8002"
+            echo "EXPO_PUBLIC_RESOURCE_NETWORK_URL=http://$LAN_HOST:8003"
+            echo "EXPO_PUBLIC_PAYMENTS_URL=http://$LAN_HOST:8004"
+            echo "EXPO_PUBLIC_ALLOW_INSECURE_HTTP=1"
+          } >> "$GITHUB_ENV"
       - name: Generate the Android project
         run: npx expo prebuild --platform android --no-install
+      - name: Allow plain-http to the LAN (live build only)
+        if: env.LAN_HOST != ''
+        run: sed -i 's/<application /<application android:usesCleartextTraffic="true" /' android/app/src/main/AndroidManifest.xml
       - name: Allow slow Gradle download
         run: sed -i 's/^networkTimeout=.*/networkTimeout=180000/' android/gradle/wrapper/gradle-wrapper.properties
       - name: Build the APK (arm64 phones)
@@ -55,8 +85,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         working-directory: apps/borewell-native/android/app/build/outputs/apk/release
         run: |
-          cp app-release.apk borewell-demo.apk
-          gh release create "demo-apk-${{ github.run_number }}" borewell-demo.apk \
+          KIND=$([ -n "$LAN_HOST" ] && echo live || echo demo)
+          cp app-release.apk "borewell-$KIND.apk"
+          SHA1=$(keytool -list -v -keystore "$GITHUB_WORKSPACE/apps/borewell-native/android/app/debug.keystore" \
+            -storepass android -alias androiddebugkey 2>/dev/null | grep "SHA1:" | head -1 | sed 's/.*SHA1: *//')
+          gh release create "$KIND-apk-${{ github.run_number }}" "borewell-$KIND.apk" \
             --draft --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "Borewell demo APK (build ${{ github.run_number }})" \
-            --notes "Demo-mode Android APK: built-in sample data, no backend. Install on an arm64 Android phone."
+            --title "Borewell $KIND APK (build ${{ github.run_number }})" \
+            --notes "Android APK ($KIND build), arm64 phones. Signing key SHA-1 (for the Google Android OAuth client, package in.aegix.borewell): $SHA1"

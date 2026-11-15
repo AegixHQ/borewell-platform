@@ -96,6 +96,8 @@ services:
       # Dev/CI only. Public registration cannot create an admin, so the
       # integration test logs in as this bootstrapped one (app/bootstrap.py).
       BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      # Optional: Web OAuth client ID(s) that switch Google sign-in on.
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
       BOOTSTRAP_ADMIN_PASSWORD: dev-only-admin-password
       # Effectively off locally: repeated test runs from one IP must not 429.
       RATE_LIMIT_LOGIN: 1000/minute
@@ -148,6 +150,10 @@ services:
       JWT_SECRET: dev-only-secret-change-in-production
       QUOTATION_SERVICE_URL: http://quotation:8000
       ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:8081,http://localhost:19006"
+      # Optional: Razorpay test keys from your shell or a .env next to this file.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
     ports:
       - "8004:8000"
 

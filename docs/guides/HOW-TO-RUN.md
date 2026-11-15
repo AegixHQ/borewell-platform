@@ -115,14 +115,11 @@ The backend starts empty, so create the data in this order:
 
 ## Three things that will look broken but aren't
 
-- **Payment can't be completed from the app.** The order is created for
-  real, but opening Razorpay's checkout sheet needs a native module that
-  isn't installed (see `apps/borewell-native/lib/checkout.js`). A payment
-  completed elsewhere shows as Paid in the app on its own, because only
-  Razorpay's signed webhook can complete one. Razorpay also needs
+- **Online payment says it isn't switched on.** Razorpay needs
   `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` in
-  `services\payments-data\.env`; without them the API returns 502 and the
-  app shows a plain explanation.
+  `services\payments-data\.env` (test-mode keys work). Without them the API
+  returns 502 and the app says so; the customer can still choose **Pay
+  cash**, which a contractor then confirms from their job screen.
 - **Names are missing everywhere.** Jobs and bookings carry only IDs — there
   is no users endpoint yet — so screens show a short job code and the
   service-area name instead of a person's name.

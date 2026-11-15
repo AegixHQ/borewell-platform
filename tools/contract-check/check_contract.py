@@ -37,7 +37,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 # it's identical across all 4 services (prometheus-fastapi-instrumentator
 # wired the same way everywhere) so it doesn't belong in any one
 # service's business contract.
-IGNORED_PATHS = {"/healthz", "/readyz", "/metrics", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
+IGNORED_PATHS = {
+    "/healthz", "/readyz", "/metrics", "/openapi.json", "/docs", "/redoc",
+    "/docs/oauth2-redirect",
+}
 
 
 def load_contract_paths(service: str) -> set:
