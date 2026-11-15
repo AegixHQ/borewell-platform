@@ -7,9 +7,9 @@ import { useState } from "react";
 import { View } from "react-native";
 import {
   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL, RESOURCE_NETWORK_URL,
-  editQuotation, generateQuotation, getJob, getJobCompletionResult,
+  confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
   getLatestQuotationForJob, listBookings, listPayments, logJobCompletion,
-  updateJobStatus,
+  rejectCashPayment, updateJobStatus,
 } from "../../services/platform";
 import {
   BOOKING_STATUS_LABELS, JOB_STAGES, STAGE_LABELS, bookingTone, colors,
@@ -45,7 +45,7 @@ export default function ContractorJob({ params }) {
     { pollMs: 20000 }
   );
   const bookings = useLoad(() => listBookings(RESOURCE_NETWORK_URL, session.token), [jobId], { pollMs: 30000 });
-  const payments = useLoad(() => listPayments(PAYMENTS_URL, session.token), [jobId], { pollMs: 30000 });
+  const payments = useLoad(() => listPayments(PAYMENTS_URL, session.token), [jobId], { pollMs: 15000 });
   const completion = useLoad(
     () => getJobCompletionResult(PLATFORM_SPINE_URL, session.token, jobId).catch((err) => {
       if (err.status === 404) return null;
@@ -66,6 +66,16 @@ export default function ContractorJob({ params }) {
       setSheet(null);
       setToast(`Moved to ${STAGE_LABELS[next]}`);
       await job.reload();
+    });
+  }
+
+  async function handleCash(confirmed) {
+    await action.run(async () => {
+      const call = confirmed ? confirmCashPayment : rejectCashPayment;
+      await call(PAYMENTS_URL, session.token, payment.payment_id);
+      setSheet(null);
+      setToast(confirmed ? "Cash payment confirmed" : "Cash payment marked as not received");
+      await Promise.all([payments.reload(), job.reload()]);
     });
   }
 
@@ -280,9 +290,20 @@ export default function ContractorJob({ params }) {
         </Row>
         <Body size={14} muted>
           {payment
-            ? `${formatInr(payment.amount)} · ${payment.status === "completed" ? "confirmed by the Razorpay webhook" : "waiting on the customer"}`
+            ? `${formatInr(payment.amount)} · ${paymentNote(payment)}`
             : "The customer pays after approving the quotation."}
         </Body>
+        {payment?.method === "cash" && payment.status === "pending" && (
+          <>
+            <Alert tone="info">
+              The customer is paying {formatInr(payment.amount)} in cash. Only confirm once the money is in your hand - this marks the job as paid.
+            </Alert>
+            <Row gap={10}>
+              <Button title="Not received" variant="light" size="sm" style={{ flex: 1 }} onPress={() => setSheet("cash-reject")} />
+              <Button title="Cash received" variant="saffron" size="sm" style={{ flex: 1 }} onPress={() => setSheet("cash-confirm")} />
+            </Row>
+          </>
+        )}
       </Card>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -295,6 +316,24 @@ export default function ContractorJob({ params }) {
         </View>
       </Card>
 
+      <Confirm
+        visible={sheet === "cash-confirm"}
+        title="Confirm cash received?"
+        body={payment ? `You are confirming you were handed ${formatInr(payment.amount)} in cash. This cannot be undone.` : ""}
+        confirmLabel="Yes, received"
+        busy={action.busy}
+        onConfirm={() => handleCash(true)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "cash-reject"}
+        title="Cash not received?"
+        body="The customer's cash payment will be closed and they can start a new payment, online or cash."
+        confirmLabel="Not received"
+        busy={action.busy}
+        onConfirm={() => handleCash(false)}
+        onClose={() => setSheet(null)}
+      />
       <Confirm
         visible={sheet === "advance"}
         title={next ? `Move to ${STAGE_LABELS[next]}?` : ""}
@@ -459,6 +498,13 @@ function paymentTone(status) {
 }
 
 const PAYMENT_LABELS = { completed: "Paid", pending: "Awaiting payment", failed: "Failed" };
+
+function paymentNote(payment) {
+  const cash = payment.method === "cash";
+  if (payment.status === "completed") return cash ? "cash, confirmed by you" : "paid online";
+  if (payment.status === "failed") return cash ? "cash not received" : "payment failed";
+  return cash ? "customer is paying cash - your confirmation needed" : "waiting on the customer";
+}
 
 function capitalise(text) {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;

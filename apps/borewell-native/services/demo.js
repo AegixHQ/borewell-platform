@@ -262,6 +262,8 @@ payments.push({
   status: "completed",
   razorpay_order_id: "order_demo123",
   razorpay_payment_id: "pay_demo456",
+  method: "online",
+  cash_confirmed_at: null,
   created_at: iso(now - 4 * DAY),
 });
 
@@ -550,10 +552,12 @@ async function handle(method, path, body, headers) {
     const mine = me.role === "customer"
       ? payments.filter((p) => jobs.find((j) => j.job_id === p.job_id)?.customer_id === me.id)
       : payments;
-    return ok(mine);
+    return ok([...mine].reverse()); // newest first, like the real service
   }
   if (path === "/v1/payments" && method === "POST") {
-    const existing = payments.find((p) => p.quotation_id === body.quotation_id);
+    // Like the real service: one live (pending or completed) payment per
+    // quotation; a failed one is closed and a new attempt starts fresh.
+    const existing = payments.find((p) => p.quotation_id === body.quotation_id && p.status !== "failed");
     if (existing) return ok(existing, 201);
     const payment = {
       payment_id: uuid(),
@@ -563,6 +567,8 @@ async function handle(method, path, body, headers) {
       status: "pending",
       razorpay_order_id: null,
       razorpay_payment_id: null,
+      method: "online",
+      cash_confirmed_at: null,
       created_at: iso(Date.now()),
     };
     payments.push(payment);
@@ -577,6 +583,47 @@ async function handle(method, path, body, headers) {
       amount_paise: Math.round(Number(payment.amount) * 100),
       currency: "INR",
     });
+  }
+  if (seg[1] === "payments" && seg[3] === "verify" && method === "POST") {
+    // The real service checks Razorpay's HMAC signature; there is no secret
+    // in the demo, so any result for the right order is accepted.
+    const payment = payments.find((p) => p.payment_id === seg[2]);
+    if (!payment) return fail(404, "PAYMENT_NOT_FOUND", "No payment with this ID.");
+    if (payment.razorpay_order_id !== body.razorpay_order_id) {
+      return fail(400, "ORDER_MISMATCH", "That Razorpay order does not belong to this payment.");
+    }
+    settleDemoPayment(payment, body.razorpay_payment_id);
+    return ok(payment);
+  }
+  if (seg[1] === "payments" && seg[3] && ["choose-cash", "choose-online", "confirm-cash", "reject-cash"].includes(seg[3]) && method === "POST") {
+    const payment = payments.find((p) => p.payment_id === seg[2]);
+    if (!payment) return fail(404, "PAYMENT_NOT_FOUND", "No payment with this ID.");
+    if (seg[3].startsWith("choose") && me.role !== "customer") {
+      return fail(403, "FORBIDDEN", "Only the customer can choose how to pay.");
+    }
+    if (seg[3] === "confirm-cash" || seg[3] === "reject-cash") {
+      if (me.role !== "contractor") return fail(403, "FORBIDDEN", "Only a contractor can do this.");
+      if (payment.method !== "cash") return fail(409, "NOT_A_CASH_PAYMENT", "The customer did not choose cash.");
+      if (seg[3] === "confirm-cash") {
+        if (payment.status === "pending") {
+          payment.cash_confirmed_at = iso(Date.now());
+          settleDemoPayment(payment, null);
+        }
+      } else if (payment.status === "completed") {
+        return fail(409, "PAYMENT_ALREADY_COMPLETED", "This payment was already confirmed and cannot be rejected.");
+      } else if (payment.status === "pending") {
+        payment.status = "failed";
+      }
+      return ok(payment);
+    }
+    if (payment.status !== "pending") return fail(409, "PAYMENT_NOT_PENDING", `Payment status is '${payment.status}', not 'pending'.`);
+    if (seg[3] === "choose-cash") {
+      if (payment.razorpay_order_id) return fail(409, "ONLINE_ORDER_OPEN", "An online payment is already open for this quotation.");
+      payment.method = "cash";
+    } else {
+      payment.method = "online";
+    }
+    return ok(payment);
   }
   if (seg[1] === "payments" && seg.length === 3 && method === "GET") {
     const payment = payments.find((p) => p.payment_id === seg[2]);
@@ -593,12 +640,13 @@ function latestQuote(jobId) {
 }
 
 /** Marks a demo payment completed - stands in for Razorpay's signed webhook. */
-export function completeDemoPayment(orderId) {
-  const payment = payments.find((p) => p.razorpay_order_id === orderId);
-  if (payment) {
-    payment.status = "completed";
-    payment.razorpay_payment_id = `pay_demo_${Date.now()}`;
-  }
+function settleDemoPayment(payment, razorpayPaymentId) {
+  payment.status = "completed";
+  if (razorpayPaymentId) payment.razorpay_payment_id = razorpayPaymentId;
+  // The real services move the job from "completion" to "payment" when
+  // payment-data publishes payment.completed.
+  const job = jobs.find((j) => j.job_id === payment.job_id);
+  if (job && job.status === "completion") job.status = "payment";
 }
 
 export function installMockApi() {

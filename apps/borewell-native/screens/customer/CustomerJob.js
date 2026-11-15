@@ -8,8 +8,9 @@ import { useState } from "react";
 import { View } from "react-native";
 import {
   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL,
-  approveQuotation, createPayment, createRazorpayOrder, getJob,
-  getJobCompletionResult, getLatestQuotationForJob, listPayments, rejectQuotation,
+  DEMO_MODE, approveQuotation, chooseCashPayment, chooseOnlinePayment, createPayment,
+  createRazorpayOrder, getJob, getJobCompletionResult, getLatestQuotationForJob,
+  listPayments, rejectQuotation, verifyRazorpayPayment,
 } from "../../services/platform";
 import {
   STAGE_LABELS, colors, customerStepIndex, formatCoords, formatInr, jobTypeLabel,
@@ -18,14 +19,14 @@ import {
 import { useAction, useAreaName, useLoad, useToast } from "../../lib/hooks";
 import { useNav } from "../../lib/nav";
 import { useSession } from "../../lib/session";
-import { openCheckout } from "../../lib/checkout";
 import { PageHeader } from "../../components/AppShell";
 import DepthGauge from "../../components/DepthGauge";
+import RazorpaySheet from "../../components/RazorpaySheet";
 import SiteMap from "../../components/SiteMap";
 import { CustomerSteps } from "../../components/StageViews";
 import {
   Alert, Amount, Badge, Body, Button, Card, Confirm, Eyebrow, Icon, Inset,
-  KeyValue, Loading, Row, Screen, Title, Toast,
+  KeyValue, Loading, Pills, Row, Screen, Title, Toast,
 } from "../../components/ui";
 
 export default function CustomerJob({ params }) {
@@ -34,6 +35,8 @@ export default function CustomerJob({ params }) {
   const { goBack } = useNav();
   const [toast, setToast] = useToast();
   const [confirm, setConfirm] = useState(null);
+  const [method, setMethod] = useState("online");
+  const [checkout, setCheckout] = useState(null); // { order, paymentId } while the Razorpay sheet is open
   const action = useAction();
 
   const job = useLoad(() => getJob(PLATFORM_SPINE_URL, session.token, jobId), [jobId], { pollMs: 20000 });
@@ -77,35 +80,94 @@ export default function CustomerJob({ params }) {
     });
   }
 
+  // The newest payment for this quotation, or a fresh one. A failed attempt
+  // (declined cash, failed card) is closed for good on the server, so a retry
+  // needs a new idempotency key - otherwise the old failed record comes back.
+  async function ensurePayment() {
+    if (payment && payment.status === "pending") return payment;
+    const failedBefore = (payments.data || []).filter(
+      (p) => p.quotation_id === q.quotation_id && p.status === "failed"
+    ).length;
+    return createPayment(PAYMENTS_URL, session.token, {
+      jobId,
+      quotationId: q.quotation_id,
+      // decimal string, passed through untouched so the backend's
+      // exact-amount check has something exact to compare
+      amount: q.total_estimate,
+      idempotencyKey: `job-${jobId}-quote-${q.quotation_id}${failedBefore ? `-try${failedBefore}` : ""}`,
+    });
+  }
+
   async function handlePay() {
     await action.run(
       async () => {
-        const existing = payment && payment.status === "pending"
-          ? payment
-          : await createPayment(PAYMENTS_URL, session.token, {
-              jobId,
-              quotationId: q.quotation_id,
-              // decimal string, passed through untouched so the backend's
-              // exact-amount check has something exact to compare
-              amount: q.total_estimate,
-              idempotencyKey: `job-${jobId}-quote-${q.quotation_id}`,
-            });
-        const order = await createRazorpayOrder(PAYMENTS_URL, session.token, existing.payment_id);
-        const result = await openCheckout({ order });
-        await payments.reload();
-        if (result.attempted) setToast("Payment submitted - confirming with the bank");
-        if (result.unsupported) {
-          action.setError(
-            "The order is created and waiting, but the Razorpay sheet can't open in this build yet - finish this payment on the web app and it will show as paid here."
-          );
+        let current = await ensurePayment();
+        if (current.method === "cash") current = await chooseOnlinePayment(PAYMENTS_URL, session.token, current.payment_id);
+        const order = await createRazorpayOrder(PAYMENTS_URL, session.token, current.payment_id);
+        if (DEMO_MODE) {
+          // No Razorpay account behind the demo: skip the sheet and let the
+          // demo backend accept a stand-in result.
+          await verifyRazorpayPayment(PAYMENTS_URL, session.token, current.payment_id, {
+            razorpay_order_id: order.razorpay_order_id,
+            razorpay_payment_id: `pay_demo_${Date.now()}`,
+            razorpay_signature: "demo",
+          });
+          await Promise.all([payments.reload(), job.reload()]);
+          setToast("Payment received");
+          return;
         }
+        await payments.reload();
+        setCheckout({ order, paymentId: current.payment_id });
       },
       {
         onError: (err) => (err.status === 502
-          ? "Online payment isn't switched on for this server yet (Razorpay keys are missing). Your contractor can still take payment directly."
+          ? "Online payment isn't switched on for this server yet (Razorpay keys are missing). You can pay your contractor in cash instead."
           : err.message),
       }
     );
+  }
+
+  async function handleCheckoutResult(outcome) {
+    const open = checkout;
+    setCheckout(null);
+    if (!open) return;
+    if (outcome.status === "dismissed") {
+      setToast("Payment cancelled - nothing was charged");
+      return;
+    }
+    if (outcome.status === "failed") {
+      action.setError(outcome.message);
+      return;
+    }
+    // Razorpay says it worked; the server checks the signature before the
+    // payment (and the job) moves on.
+    await action.run(
+      async () => {
+        await verifyRazorpayPayment(PAYMENTS_URL, session.token, open.paymentId, outcome.result);
+        await Promise.all([payments.reload(), job.reload()]);
+        setToast("Payment received");
+      },
+      {
+        onError: (err) => `Razorpay reported a payment but we could not confirm it yet (${err.message}). Do not pay again - tap "Check again" in a minute.`,
+      }
+    );
+  }
+
+  async function handleChooseCash() {
+    await action.run(async () => {
+      const current = await ensurePayment();
+      await chooseCashPayment(PAYMENTS_URL, session.token, current.payment_id);
+      await payments.reload();
+      setToast("Cash payment noted - hand it to your contractor");
+    });
+  }
+
+  async function handleSwitchToOnline() {
+    await action.run(async () => {
+      await chooseOnlinePayment(PAYMENTS_URL, session.token, payment.payment_id);
+      await payments.reload();
+      setMethod("online");
+    });
   }
 
   if (job.loading && !job.data) return <Screen><Card><Loading label="Loading your job…" /></Card></Screen>;
@@ -239,27 +301,55 @@ export default function CustomerJob({ params }) {
               <KeyValue k="Paid" v={formatInr(payment.amount)} />
               {!!payment.razorpay_payment_id && <KeyValue k="Reference" v={payment.razorpay_payment_id} />}
             </Row>
+          ) : payment?.method === "cash" && payment.status === "pending" ? (
+            <>
+              <Amount>{formatInr(payment.amount)}</Amount>
+              <Alert tone="info">
+                You chose to pay in cash. Hand {formatInr(payment.amount)} to your contractor - the job moves on as soon as they confirm they have received it.
+              </Alert>
+              <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
+              <Button title="Pay online instead" variant="light" size="sm" busy={action.busy} onPress={handleSwitchToOnline} />
+            </>
           ) : (
             <>
+              {!payment?.razorpay_order_id && (
+                <Pills
+                  value={method}
+                  onChange={setMethod}
+                  options={[{ value: "online", label: "Pay online" }, { value: "cash", label: "Pay cash" }]}
+                />
+              )}
               <Body size={14} muted>
-                Pay with UPI, card or net banking. Your payment is confirmed by the bank, not by this screen.
+                {method === "cash" && !payment?.razorpay_order_id
+                  ? "Pay your contractor in cash. The payment counts only after your contractor confirms they received it."
+                  : "Pay with UPI, card or net banking. Your payment is confirmed by Razorpay, not by this screen."}
               </Body>
               <Amount>{formatInr(q.total_estimate)}</Amount>
-              <Button
-                title={action.busy ? "Opening…" : payment ? "Continue payment" : "Pay now"}
-                variant="saffron"
-                size="lg"
-                trailing
-                busy={action.busy}
-                onPress={handlePay}
-              />
-              {payment?.status === "pending" && (
+              {method === "cash" && !payment?.razorpay_order_id ? (
+                <Button title="Pay in cash" variant="saffron" size="lg" trailing busy={action.busy} onPress={handleChooseCash} />
+              ) : (
+                <Button
+                  title={action.busy ? "Opening…" : payment?.status === "pending" ? "Continue payment" : "Pay now"}
+                  variant="saffron"
+                  size="lg"
+                  trailing
+                  busy={action.busy}
+                  onPress={handlePay}
+                />
+              )}
+              {payment?.status === "pending" && !!payment.razorpay_order_id && (
                 <>
-                  <Alert tone="info">Waiting for the bank to confirm this payment.</Alert>
+                  <Alert tone="info">If you already paid, we are waiting for Razorpay to confirm it.</Alert>
                   <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
                 </>
               )}
-              {payment?.status === "failed" && <Alert>That attempt failed. You can try again.</Alert>}
+              {payment?.status === "failed" && (
+                <Alert>
+                  {payment.method === "cash"
+                    ? "Your contractor said they did not receive the cash. You can start a new payment."
+                    : "That attempt failed. You can try again."}
+                </Alert>
+              )}
             </>
           )}
         </Card>
@@ -315,6 +405,7 @@ export default function CustomerJob({ params }) {
         onConfirm={handleReject}
         onClose={() => setConfirm(null)}
       />
+      <RazorpaySheet order={checkout?.order} email={session.email} onResult={handleCheckoutResult} />
       <Toast message={toast} />
     </Screen>
   );

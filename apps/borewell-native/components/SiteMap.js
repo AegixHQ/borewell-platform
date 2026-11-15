@@ -10,10 +10,15 @@
  * zoom. No dependency, no native build, and the tile URLs are identical to
  * apps/web-app/src/components/SiteMap.jsx's.
  *
- * Tiles come from tile.openstreetmap.org, whose usage policy is meant for
- * modest traffic and asks for an identifying User-Agent that <Image> can't
- * set. Fine for a pilot; before any real launch, point TILE_URL at your own
- * tile server or a keyed provider - it is one line.
+ * Tiles come from tile.openstreetmap.org first. Its usage policy requires an
+ * identifying User-Agent / Referer and blocks requests without one - a
+ * browser sends a Referer on its own (why the map worked on the laptop), but
+ * a native <Image> sends neither, so Android showed "access blocked" tiles.
+ * The headers below fix that. If OSM still refuses (rate limits, a network
+ * that blocks it) the map falls back, for the rest of the session, to CARTO's
+ * OSM-based basemap. For a real launch set EXPO_PUBLIC_TILE_URL to your own
+ * tile server or a keyed provider (it is tried first); OSM's public servers
+ * are for modest traffic only.
  *
  * Note for anyone extending this: POST /v1/resources/match does NOT return
  * lat/lng for the resources it ranks (only distance_km - see
@@ -26,7 +31,29 @@ import { PILOT_CENTER, colors } from "../theme";
 import { Icon } from "./ui";
 
 const TILE = 256;
-const TILE_URL = (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+const APP_ID = "BorewellApp/1.0 (+https://github.com/AegixHQ/borewell-platform)";
+const fill = (tpl, z, x, y) => tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+
+// Tried in order; a tile that fails to load moves every map on to the next.
+const PROVIDERS = [
+  process.env.EXPO_PUBLIC_TILE_URL && {
+    url: process.env.EXPO_PUBLIC_TILE_URL,
+    credit: process.env.EXPO_PUBLIC_TILE_CREDIT || "© map contributors",
+  },
+  {
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    headers: { "User-Agent": APP_ID, Referer: "https://github.com/AegixHQ/borewell-platform" },
+    credit: "© OpenStreetMap contributors",
+  },
+  {
+    url: "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+    headers: { "User-Agent": APP_ID },
+    credit: "© OpenStreetMap contributors © CARTO",
+  },
+].filter(Boolean);
+
+// Module-level so a provider that failed once is not retried by every map.
+let preferred = 0;
 
 function project(lat, lng, zoom) {
   const scale = TILE * 2 ** zoom;
@@ -67,6 +94,12 @@ export default function SiteMap({
   const [centre, setCentre] = useState(start);
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
+  const [providerIdx, setProviderIdx] = useState(preferred);
+  const provider = PROVIDERS[Math.min(providerIdx, PROVIDERS.length - 1)];
+  const tileFailed = () => {
+    preferred = Math.min(Math.max(preferred, providerIdx + 1), PROVIDERS.length - 1);
+    setProviderIdx(preferred);
+  };
 
   // Rebuilt whenever what it closes over changes, rather than reading the
   // current values out of refs: the responder handlers are read off the
@@ -123,7 +156,8 @@ export default function SiteMap({
       {tiles.map((t) => (
         <Image
           key={t.key}
-          source={{ uri: TILE_URL(t.z, t.x, t.y) }}
+          source={{ uri: fill(provider.url, t.z, t.x, t.y), headers: provider.headers }}
+          onError={tileFailed}
           style={{ position: "absolute", left: t.left, top: t.top, width: TILE, height: TILE }}
           fadeDuration={120}
         />
@@ -183,7 +217,7 @@ export default function SiteMap({
           overflow: "hidden",
         }}
       >
-        © OpenStreetMap
+        {provider.credit}
       </Text>
     </View>
   );
