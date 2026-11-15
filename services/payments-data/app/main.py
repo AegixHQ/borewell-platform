@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -22,6 +23,7 @@ from app.gateway.razorpay_client import (
     WebhookSignatureInvalid,
     create_order,
     get_razorpay_config,
+    verify_payment_signature,
     verify_webhook_signature,
 )
 from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
@@ -177,6 +179,8 @@ def _payment_to_response(p: models.Payment) -> schemas.PaymentResponse:
         status=p.status,
         razorpay_order_id=p.razorpay_order_id,
         razorpay_payment_id=p.razorpay_payment_id,
+        method=p.method or "online",
+        cash_confirmed_at=p.cash_confirmed_at,
         created_at=p.created_at,
     )
 
@@ -415,6 +419,15 @@ def create_order_for_payment(
             },
         )
 
+    if payment.method == "cash":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PAYMENT_IS_CASH",
+                "message": "This payment is set to cash. Switch it back to online first.",
+            },
+        )
+
     # Idempotent: a customer re-opening the payment screen (e.g. after
     # closing Checkout without completing it) must not spawn a second
     # Razorpay order for the same payment - reuse the existing one.
@@ -456,6 +469,202 @@ def create_order_for_payment(
         amount_paise=order["amount"],
         currency=order.get("currency", "INR"),
     )
+
+
+def _get_payment_or_404(db: Session, payment_id: uuid.UUID) -> models.Payment:
+    payment = db.query(models.Payment).filter(models.Payment.id == str(payment_id)).first()
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "PAYMENT_NOT_FOUND", "message": "No payment with this ID exists."},
+        )
+    return payment
+
+
+def _own_pending_payment(db: Session, payment_id: uuid.UUID, claims: dict) -> models.Payment:
+    payment = _get_payment_or_404(db, payment_id)
+    if payment.customer_id != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "You can only change your own payments."},
+        )
+    if payment.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PAYMENT_NOT_PENDING",
+                "message": f"Payment status is '{payment.status}', not 'pending'.",
+            },
+        )
+    return payment
+
+
+def _mark_completed(db: Session, payment: models.Payment) -> None:
+    db.commit()
+    db.refresh(payment)
+    events.payment_completed(
+        payment_id=payment.id,
+        job_id=payment.job_id,
+        amount=payment.amount,
+        completed_at=payment.updated_at,
+    )
+
+
+@app.post("/v1/payments/{payment_id}/choose-cash", response_model=schemas.PaymentResponse)
+def choose_cash(
+    payment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer")),
+):
+    """The customer will pay the contractor in cash. The payment stays
+    'pending' until a contractor confirms the cash arrived (confirm-cash);
+    nothing the customer's own app does can complete it. Refused once a
+    Razorpay order exists: that order could still be paid online later, so
+    the same quotation could end up settled twice."""
+    payment = _own_pending_payment(db, payment_id, claims)
+    if payment.razorpay_order_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ONLINE_ORDER_OPEN",
+                "message": "An online payment is already open for this quotation. Finish it, "
+                "or ask your contractor to take payment on a fresh request.",
+            },
+        )
+    payment.method = "cash"
+    db.commit()
+    db.refresh(payment)
+    return _payment_to_response(payment)
+
+
+@app.post("/v1/payments/{payment_id}/choose-online", response_model=schemas.PaymentResponse)
+def choose_online(
+    payment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer")),
+):
+    """Change of mind before the contractor has confirmed any cash."""
+    payment = _own_pending_payment(db, payment_id, claims)
+    payment.method = "online"
+    db.commit()
+    db.refresh(payment)
+    return _payment_to_response(payment)
+
+
+@app.post("/v1/payments/{payment_id}/confirm-cash", response_model=schemas.PaymentResponse)
+def confirm_cash(
+    payment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+):
+    """A contractor (or admin) confirms they received the cash. This is the
+    only way a cash payment becomes 'completed', and it is what moves the job
+    on (the same payment.completed event the online path fires). Repeating
+    the call is harmless."""
+    payment = _get_payment_or_404(db, payment_id)
+    if payment.method != "cash":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "NOT_A_CASH_PAYMENT", "message": "The customer did not choose cash."},
+        )
+    if payment.status == "completed":
+        return _payment_to_response(payment)
+    if payment.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PAYMENT_NOT_PENDING",
+                "message": f"Payment status is '{payment.status}', not 'pending'.",
+            },
+        )
+    payment.status = "completed"
+    payment.cash_confirmed_by = claims["sub"]
+    payment.cash_confirmed_at = datetime.now(timezone.utc)
+    _mark_completed(db, payment)
+    return _payment_to_response(payment)
+
+
+@app.post("/v1/payments/{payment_id}/reject-cash", response_model=schemas.PaymentResponse)
+def reject_cash(
+    payment_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+):
+    """The contractor did not receive the cash. The payment is closed as
+    failed, and the customer can start a new one (online or cash)."""
+    payment = _get_payment_or_404(db, payment_id)
+    if payment.method != "cash":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "NOT_A_CASH_PAYMENT", "message": "The customer did not choose cash."},
+        )
+    if payment.status == "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PAYMENT_ALREADY_COMPLETED",
+                "message": "This payment was already confirmed and cannot be rejected.",
+            },
+        )
+    if payment.status == "pending":
+        payment.status = "failed"
+        db.commit()
+        db.refresh(payment)
+    return _payment_to_response(payment)
+
+
+@app.post("/v1/payments/{payment_id}/verify", response_model=schemas.PaymentResponse)
+def verify_payment(
+    payment_id: uuid.UUID,
+    payload: schemas.VerifyPaymentRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer")),
+):
+    """Completes an online payment from the values Razorpay Checkout returns
+    to the app. The signature is an HMAC only Razorpay and this server can
+    produce (it needs the API key secret), so a client cannot claim a payment
+    that did not happen. This is what makes payments work where Razorpay's
+    webhook cannot reach (a laptop in test mode); the webhook remains the
+    backup for a customer who closes the app before this call. Repeating it
+    is harmless."""
+    payment = _get_payment_or_404(db, payment_id)
+    if payment.customer_id != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "You can only verify your own payments."},
+        )
+    if payment.method == "cash":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "PAYMENT_IS_CASH", "message": "This payment is set to cash."},
+        )
+    if not payment.razorpay_order_id or payment.razorpay_order_id != payload.razorpay_order_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "ORDER_MISMATCH",
+                "message": "That Razorpay order does not belong to this payment.",
+            },
+        )
+    try:
+        verify_payment_signature(
+            payload.razorpay_order_id, payload.razorpay_payment_id, payload.razorpay_signature
+        )
+    except RazorpayNotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "GATEWAY_NOT_CONFIGURED", "message": str(exc)},
+        )
+    except WebhookSignatureInvalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_SIGNATURE", "message": "Payment signature did not verify."},
+        )
+    if payment.status != "completed":
+        payment.razorpay_payment_id = payload.razorpay_payment_id
+        payment.status = "completed"
+        _mark_completed(db, payment)
+    return _payment_to_response(payment)
 
 
 @app.post("/v1/payments/{payment_id}/confirm", response_model=schemas.PaymentResponse)
