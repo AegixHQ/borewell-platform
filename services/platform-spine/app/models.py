@@ -34,6 +34,9 @@ class User(Base):
     phone = Column(String, nullable=True)
     password_hash = Column(String, nullable=False)
     role = Column(SAEnum(*ROLES, name="user_role"), nullable=False)
+    # Google's stable account ID ("sub"), set the first time this user signs
+    # in with Google. Null for accounts that have only ever used a password.
+    google_sub = Column(String, unique=True, nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 

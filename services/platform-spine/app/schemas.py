@@ -46,9 +46,24 @@ class LoginRequest(BaseModel):
     password: str = Field(max_length=128)
 
 
+class GoogleLoginRequest(BaseModel):
+    id_token: str = Field(min_length=20, max_length=4096)
+    # Only used when this Google account has no user here yet.
+    role: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_valid(cls, v):
+        if v is not None and v not in PUBLIC_ROLES:
+            raise ValueError(f"role must be one of {PUBLIC_ROLES}")
+        return v
+
+
 class TokenResponse(BaseModel):
     access_token: str
     role: str
+    # True only on the response that created the account (Google sign-in).
+    new_account: bool = False
 
 
 class Location(BaseModel):
