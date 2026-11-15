@@ -153,8 +153,87 @@ paths:
           description: Not the owning customer
         '404':
           description: Payment not found
+        '409':
+          description: This payment is set to cash (PAYMENT_IS_CASH)
         '502':
           description: Razorpay order-creation call failed
+
+  /v1/payments/{payment_id}/choose-cash:
+    post:
+      summary: |
+        The customer will pay the contractor in cash. The payment stays
+        'pending' (method becomes 'cash') until a contractor confirms the
+        cash arrived. Customer only, and only the payment's own customer.
+      parameters:
+        - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '403': { description: Not the owning customer }
+        '404': { description: Payment not found }
+        '409': { description: "Payment is not pending (PAYMENT_NOT_PENDING) or an online Razorpay order is already open (ONLINE_ORDER_OPEN)" }
+  /v1/payments/{payment_id}/choose-online:
+    post:
+      summary: Change back from cash to online before a contractor has confirmed any cash. Customer only (own payment).
+      parameters:
+        - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '403': { description: Not the owning customer }
+        '404': { description: Payment not found }
+        '409': { description: Payment is not pending (PAYMENT_NOT_PENDING) }
+  /v1/payments/{payment_id}/confirm-cash:
+    post:
+      summary: |
+        A contractor (or admin) confirms the cash arrived. The only way a cash
+        payment becomes 'completed'; fires the same payment.completed event as
+        an online payment. Idempotent.
+      parameters:
+        - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payment (completed), content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '403': { description: Caller is not a contractor or admin }
+        '404': { description: Payment not found }
+        '409': { description: "Not a cash payment (NOT_A_CASH_PAYMENT) or not pending (PAYMENT_NOT_PENDING)" }
+  /v1/payments/{payment_id}/reject-cash:
+    post:
+      summary: |
+        A contractor (or admin) says the cash did not arrive. Closes the
+        payment as 'failed'; the customer can start a new payment.
+      parameters:
+        - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '403': { description: Caller is not a contractor or admin }
+        '404': { description: Payment not found }
+        '409': { description: "Not a cash payment (NOT_A_CASH_PAYMENT) or already completed (PAYMENT_ALREADY_COMPLETED)" }
+  /v1/payments/{payment_id}/verify:
+    post:
+      summary: |
+        Complete an online payment from the values Razorpay Checkout returns to
+        the app. The signature (HMAC-SHA256 of "order_id|payment_id" with the
+        Razorpay API key secret) is verified server-side, so a client cannot
+        claim a payment that did not happen. The webhook remains the backup.
+        Customer only (own payment). Idempotent.
+      parameters:
+        - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [razorpay_order_id, razorpay_payment_id, razorpay_signature]
+              properties:
+                razorpay_order_id: { type: string }
+                razorpay_payment_id: { type: string }
+                razorpay_signature: { type: string }
+      responses:
+        '200': { description: Payment (completed), content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '400': { description: "Order does not belong to this payment (ORDER_MISMATCH) or bad signature (INVALID_SIGNATURE)" }
+        '403': { description: Not the owning customer }
+        '404': { description: Payment not found }
+        '409': { description: This payment is set to cash (PAYMENT_IS_CASH) }
+        '502': { description: Razorpay keys are not configured (GATEWAY_NOT_CONFIGURED) }
 
   /v1/payments/webhook:
     post:
@@ -208,4 +287,6 @@ components:
         status: { type: string, enum: [pending, completed, failed] }
         razorpay_order_id: { type: string, nullable: true, description: "Set once POST /v1/payments/{id}/create-order has been called" }
         razorpay_payment_id: { type: string, nullable: true, description: "Set once the webhook reports a captured/failed payment attempt" }
+        method: { type: string, enum: [online, cash], description: "How the customer settles. A 'cash' payment stays pending until a contractor confirms it." }
+        cash_confirmed_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }

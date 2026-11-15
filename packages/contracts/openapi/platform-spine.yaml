@@ -36,6 +36,45 @@ paths:
           description: Validation error (including a role that cannot be self-registered, e.g. admin, or a password over 72 bytes)
         '429':
           description: Too many registration attempts from this client; see Retry-After
+  /v1/auth/google:
+    post:
+      summary: |
+        Sign in or sign up with a Google ID token. The server verifies the
+        token (signature, audience = our client IDs in GOOGLE_CLIENT_IDS,
+        issuer, expiry, verified email). Existing account: signs in (role
+        ignored). No account: creates one with the given role, or answers 409
+        ROLE_REQUIRED. Contractor sign-up honours
+        ALLOW_PUBLIC_CONTRACTOR_REGISTRATION. Admin accounts cannot use this
+        route. First Google sign-in to an existing password account links it
+        and retires the old password. Rate limited like login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_token]
+              properties:
+                id_token: { type: string, description: "Google ID token (JWT) from the app's Google sign-in" }
+                role: { type: string, enum: [customer, contractor, resource_owner], description: "Only used when creating a new account" }
+      responses:
+        '200':
+          description: Signed in (new_account is true when this call created the account)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  role: { type: string }
+                  new_account: { type: boolean }
+        '401': { description: Google token failed verification (INVALID_GOOGLE_TOKEN) }
+        '403': { description: "Admin account (ADMIN_GOOGLE_SIGNIN_DISABLED) or contractor sign-up closed (CONTRACTOR_REGISTRATION_CLOSED)" }
+        '409': { description: "No account yet and no role given (ROLE_REQUIRED), email linked to another Google account (GOOGLE_ACCOUNT_MISMATCH), or email taken (EMAIL_TAKEN)" }
+        '422': { description: Validation error }
+        '429': { description: Rate limited }
+        '502': { description: Could not reach Google to fetch signing keys (GOOGLE_UNAVAILABLE) }
+        '503': { description: Google sign-in is not configured on this server (GOOGLE_NOT_CONFIGURED) }
   /v1/auth/login:
     post:
       summary: Authenticate and receive a JWT
