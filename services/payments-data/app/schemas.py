@@ -23,9 +23,19 @@ class PaymentResponse(BaseModel):
     status: str
     razorpay_order_id: str | None = None
     razorpay_payment_id: str | None = None
+    method: str = "online"
+    cash_confirmed_at: datetime | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VerifyPaymentRequest(BaseModel):
+    """The three values Razorpay Checkout hands the client on success."""
+
+    razorpay_order_id: str = Field(min_length=1, max_length=128)
+    razorpay_payment_id: str = Field(min_length=1, max_length=128)
+    razorpay_signature: str = Field(min_length=1, max_length=256)
 
 
 class CreateOrderResponse(BaseModel):

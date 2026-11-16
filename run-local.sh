@@ -20,12 +20,12 @@ fi
 # shellcheck disable=SC1091
 . "$VENV/bin/activate"
 pip install -q --upgrade pip
-pip install -q fastapi "uvicorn[standard]" sqlalchemy alembic pydantic redis \
+pip install -q fastapi "uvicorn[standard]" "sqlalchemy>=2.0,<2.1" alembic pydantic redis \
   pyjwt bcrypt email-validator httpx prometheus-fastapi-instrumentator
 
 export JWT_SECRET="${JWT_SECRET:-dev-only-secret-change-in-production}"
 export REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
-export ALLOWED_ORIGINS="http://localhost:5173,http://localhost:5174,http://localhost:5175"
+export ALLOWED_ORIGINS="http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:8081,http://localhost:19006"
 export JWT_EXPIRY_MINUTES=60
 export QUOTATION_SERVICE_URL="http://localhost:8002"
 export PLATFORM_SPINE_URL="http://localhost:8001"

@@ -26,15 +26,26 @@ updates:
   - package-ecosystem: docker
     directory: /services/payments-data
     schedule: { interval: weekly }
+  # npm: minor/patch only. A major bump (react 19, vite 8, eslint 10, expo 58)
+  # is a deliberate migration - Expo packages must match SDK 57 - not something
+  # to merge off a bot PR.
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       web-minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: npm
     directory: /apps/borewell-native
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       native-minor-and-patch:
         update-types: [minor, patch]

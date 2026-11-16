@@ -46,9 +46,24 @@ class LoginRequest(BaseModel):
     password: str = Field(max_length=128)
 
 
+class GoogleLoginRequest(BaseModel):
+    id_token: str = Field(min_length=20, max_length=4096)
+    # Only used when this Google account has no user here yet.
+    role: Optional[str] = None
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_valid(cls, v):
+        if v is not None and v not in PUBLIC_ROLES:
+            raise ValueError(f"role must be one of {PUBLIC_ROLES}")
+        return v
+
+
 class TokenResponse(BaseModel):
     access_token: str
     role: str
+    # True only on the response that created the account (Google sign-in).
+    new_account: bool = False
 
 
 class Location(BaseModel):
@@ -75,6 +90,43 @@ class JobCreateRequest(BaseModel):
         return v
 
 
+class WalkInJobCreateRequest(BaseModel):
+    """A contractor opening a job for a customer who has no account."""
+
+    customer_name: str = Field(min_length=1, max_length=100)
+    customer_phone: str = Field(max_length=20)
+    location: Location
+    job_type: str
+
+    @field_validator("customer_name")
+    @classmethod
+    def name_not_blank(cls, v):
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("customer_name must not be blank")
+        return v
+
+    @field_validator("customer_phone")
+    @classmethod
+    def phone_format(cls, v):
+        # Same rule as registration: a 10-digit Indian mobile, optional +91.
+        digits = v.replace("+91", "").replace(" ", "").replace("-", "")
+        if not (digits.isdigit() and len(digits) == 10):
+            raise ValueError(
+                "customer_phone must be a valid 10-digit Indian mobile number, "
+                "optionally prefixed with +91"
+            )
+        return digits
+
+    @field_validator("job_type")
+    @classmethod
+    def job_type_valid(cls, v):
+        allowed = {"residential", "agricultural", "commercial"}
+        if v not in allowed:
+            raise ValueError(f"job_type must be one of {allowed}")
+        return v
+
+
 class JobResponse(BaseModel):
     job_id: uuid.UUID
     customer_id: uuid.UUID
@@ -82,6 +134,10 @@ class JobResponse(BaseModel):
     job_type: str
     location: Location
     created_at: datetime
+    # True for a job a contractor opened for a customer without an account.
+    walk_in: bool = False
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

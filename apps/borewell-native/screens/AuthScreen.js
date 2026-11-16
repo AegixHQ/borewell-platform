@@ -7,12 +7,13 @@
  */
 import { useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
-import { login, registerAccount } from "../services/auth";
+import { googleLogin, login, registerAccount } from "../services/auth";
 import { DEMO_MODE, PLATFORM_SPINE_URL } from "../services/platform";
 import { DEMO_ACCOUNTS } from "../services/demo";
 import { colors } from "../theme";
 import { useAction } from "../lib/hooks";
 import { useSession } from "../lib/session";
+import { GOOGLE_ENABLED, getGoogleIdToken } from "../lib/google";
 import DepthGauge from "../components/DepthGauge";
 import { TOP_INSET } from "../components/AppShell";
 import { Alert, Body, Button, Card, Field, Input, Logo, Pills, Row, Title } from "../components/ui";
@@ -31,6 +32,7 @@ export default function AuthScreen() {
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
   const [role, setRole] = useState("customer");
+  const [notice, setNotice] = useState(null);
 
   const registering = mode === "register";
 
@@ -40,6 +42,25 @@ export default function AuthScreen() {
         ? await registerAccount(PLATFORM_SPINE_URL, { email, password, phone, role })
         : await login(PLATFORM_SPINE_URL, email, password);
       await signIn({ token, email });
+    });
+  }
+
+  async function continueWithGoogle() {
+    setNotice(null);
+    await run(async () => {
+      const google = await getGoogleIdToken();
+      if (!google) return; // closed the Google picker - nothing to report
+      try {
+        const { access_token: token } = await googleLogin(
+          PLATFORM_SPINE_URL, google.idToken, registering ? role : undefined
+        );
+        await signIn({ token, email: google.email });
+      } catch (err) {
+        if (err.code !== "ROLE_REQUIRED") throw err;
+        // First time with this Google account: role is chosen once, here.
+        setMode("register");
+        setNotice("New here? Choose how you're joining, then tap Continue with Google again.");
+      }
     });
   }
 
@@ -115,6 +136,7 @@ export default function AuthScreen() {
           </Field>
 
           {!!error && <Alert>{error}</Alert>}
+          {!!notice && <Alert tone="info">{notice}</Alert>}
 
           <Button
             title={busy ? (registering ? "Creating…" : "Signing in…") : registering ? "Create account" : "Sign in"}
@@ -123,6 +145,16 @@ export default function AuthScreen() {
             busy={busy}
             onPress={submit}
           />
+
+          {GOOGLE_ENABLED && !DEMO_MODE && (
+            <Button
+              title="Continue with Google"
+              variant="light"
+              size="lg"
+              busy={busy}
+              onPress={continueWithGoogle}
+            />
+          )}
 
           {registering && (
             <Body size={13} muted>

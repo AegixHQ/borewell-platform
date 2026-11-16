@@ -245,6 +245,10 @@ def _quotation_to_response(
         total_estimate=q.total,
         depth_overage_rate_per_ft=q.depth_overage_rate_per_ft,
         created_at=q.created_at,
+        customer_id=q.customer_id,
+        contractor_id=q.contractor_id,
+        walk_in=bool(q.walk_in),
+        decided_by=q.decided_by,
     )
 
 
@@ -259,6 +263,35 @@ def _require_quotation_access(quotation: models.Quotation, claims: dict) -> None
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "You do not have access to this quotation."},
         )
+
+
+def _authorize_decision(quotation: models.Quotation, claims: dict) -> str | None:
+    """Who may approve/reject. The customer, for their own quotation - as
+    before. A contractor/admin ONLY for a walk-in job (a customer with no
+    account, who cannot do it themselves); for any app customer's quotation
+    it stays the customer's decision alone. A contractor must also be the one
+    who quoted it. Returns the deciding user's id when it was not the customer
+    (recorded as decided_by), else None."""
+    if claims["role"] == "customer":
+        _require_quotation_access(quotation, claims)
+        return None
+    if not quotation.walk_in:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "Only the customer can approve or reject this quotation.",
+            },
+        )
+    if claims["role"] == "contractor" and quotation.contractor_id != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "Only the contractor who quoted this job can decide for the customer.",
+            },
+        )
+    return claims["sub"]
 
 
 def _require_latest_version(db: Session, quotation: models.Quotation) -> None:
@@ -348,6 +381,7 @@ def generate_quotation(
         job_id=str(payload.job_id),
         contractor_id=claims["sub"],
         customer_id=job["customer_id"],
+        walk_in=bool(job.get("walk_in", False)),
         job_type=payload.job_type,
         version=1,
         status="draft",
@@ -476,6 +510,7 @@ def edit_quotation(
         job_id=existing.job_id,
         contractor_id=existing.contractor_id,
         customer_id=existing.customer_id,
+        walk_in=existing.walk_in,
         job_type=existing.job_type,
         version=existing.version + 1,
         status="draft",
@@ -501,7 +536,7 @@ def edit_quotation(
 def approve_quotation(
     quotation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("customer")),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
 ):
     quotation = db.query(models.Quotation).filter(models.Quotation.id == str(quotation_id)).first()
     if not quotation:
@@ -509,13 +544,14 @@ def approve_quotation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
         )
-    _require_quotation_access(quotation, claims)
+    decided_by = _authorize_decision(quotation, claims)
     _require_latest_version(db, quotation)
     if quotation.status == "approved":  # replay of the same decision: idempotent
         return _quotation_to_response(quotation)
     if quotation.status != "draft" and quotation.status != "sent":
         raise _state_conflict(quotation, "approved")
     quotation.status = "approved"
+    quotation.decided_by = decided_by
     db.commit()
     db.refresh(quotation)
     return _quotation_to_response(quotation)
@@ -525,7 +561,7 @@ def approve_quotation(
 def reject_quotation(
     quotation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("customer")),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
 ):
     quotation = db.query(models.Quotation).filter(models.Quotation.id == str(quotation_id)).first()
     if not quotation:
@@ -533,7 +569,7 @@ def reject_quotation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "QUOTATION_NOT_FOUND", "message": "No quotation with this ID exists."},
         )
-    _require_quotation_access(quotation, claims)
+    decided_by = _authorize_decision(quotation, claims)
     _require_latest_version(db, quotation)
     if quotation.status == "rejected":  # replay of the same decision: idempotent
         return _quotation_to_response(quotation)
@@ -542,6 +578,7 @@ def reject_quotation(
     if quotation.status != "draft" and quotation.status != "sent":
         raise _state_conflict(quotation, "rejected")
     quotation.status = "rejected"
+    quotation.decided_by = decided_by
     db.commit()
     db.refresh(quotation)
     return _quotation_to_response(quotation)

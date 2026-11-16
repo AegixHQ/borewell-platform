@@ -24,3 +24,8 @@ docker-compose.override.yml
 .pytest_cache/
 __pycache__/
 *.egg-info/
+
+# Local demo runtime (run-local.sh): never commit
+.venv-demo/
+.demo-data/
+.venv*/

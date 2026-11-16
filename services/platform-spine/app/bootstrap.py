@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 
+from email_validator import EmailNotValidError, validate_email
 from sqlalchemy.orm import Session
 
 from app import models
@@ -43,6 +44,12 @@ def ensure_user(db: Session, email: str, password: str, role: str) -> bool:
     """Create the account if no user has this email. Returns True if created."""
     if role not in models.ROLES:
         raise ValueError(f"role must be one of {models.ROLES}")
+    # The same check login applies. Without it an operator could create an
+    # account (e.g. admin@something.local) that can then never log in.
+    try:
+        validate_email(email, check_deliverability=False)
+    except EmailNotValidError as exc:
+        raise ValueError(f"email is not usable for login: {exc}") from exc
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:

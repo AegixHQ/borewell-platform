@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint lint-frontend lint-app lint-all check-contracts migrate prod-up prod-down prod-logs
+.PHONY: up down logs test lint lint-frontend lint-app lint-all check-contracts migrate prod-init prod-check prod-deploy prod-smoke prod-contractor prod-backup prod-up prod-down prod-logs
 
 up:
 	docker compose up --build -d
@@ -38,16 +38,36 @@ migrate:
 		(cd services/$$svc && alembic upgrade head) || exit 1; \
 	done
 
-# Production targets - see docs/deployment/PRODUCTION.md for the full
-# runbook. These assume .env.prod already exists (cp .env.prod.example
-# .env.prod, then fill it in) - deliberately NOT auto-created here, since
-# a Makefile target that silently creates a secrets file with placeholder
-# values is exactly the kind of thing that gets accidentally deployed.
+# Production - the short path (see docs/deployment/GO-LIVE.md):
+#   make prod-init DOMAIN=api.yourdomain.in EMAIL=you@yourdomain.in
+#   (fill in .env.prod)   make prod-check   make prod-deploy
+# HTTPS is on by default; add BORE_NO_TLS=1 for a plain-HTTP test run.
+prod-init:
+	python3 tools/go-live/init_env.py $(if $(DOMAIN),--domain $(DOMAIN)) $(if $(EMAIL),--email $(EMAIL))
+
+prod-check:
+	python3 tools/go-live/preflight.py --dns
+
+prod-deploy:
+	tools/go-live/deploy.sh
+
+prod-smoke:
+	python3 tools/go-live/smoke.py --env .env.prod
+
+# Create a contractor account by hand (public contractor sign-up is closed).
+prod-contractor:
+	@test -n "$(EMAIL)" || { echo "usage: make prod-contractor EMAIL=owner@example.com"; exit 1; }
+	tools/go-live/stack.sh exec -it platform-spine python -m app.bootstrap create-user --role contractor --email $(EMAIL)
+
+prod-backup:
+	./infra/backup/backup.sh
+
+# Plain stack control (reads .env.prod; no preflight, no smoke test).
 prod-up:
-	docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+	tools/go-live/stack.sh up -d --build
 
 prod-down:
-	docker compose -f docker-compose.prod.yml --env-file .env.prod down
+	tools/go-live/stack.sh down
 
 prod-logs:
-	docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f
+	tools/go-live/stack.sh logs -f

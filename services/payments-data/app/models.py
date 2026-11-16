@@ -7,6 +7,9 @@ from sqlalchemy import Enum as SAEnum
 from app.database import Base
 
 PAYMENT_STATUSES = ("pending", "completed", "failed")
+# How the customer settles. "cash" means they pay the contractor in person;
+# the payment stays "pending" until a contractor confirms the cash arrived.
+PAYMENT_METHODS = ("online", "cash")
 
 # Same Bug 2 fix as quotation service's MONEY type (app/models.py there):
 # Float loses precision on repeated arithmetic and, worse, on the exact
@@ -45,6 +48,12 @@ class Payment(Base):
     # a bug).
     razorpay_order_id = Column(String, nullable=True, index=True)
     razorpay_payment_id = Column(String, nullable=True, index=True)
+    # "online" (Razorpay) or "cash". Plain string, not a DB enum: adding a
+    # method later must not need an ALTER TYPE migration.
+    method = Column(String(10), nullable=False, default="online", server_default="online")
+    # Who confirmed the cash arrived, and when. Both null until then.
+    cash_confirmed_by = Column(String(36), nullable=True)
+    cash_confirmed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

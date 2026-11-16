@@ -116,6 +116,8 @@ pip install pre-commit && pre-commit install
 
 Single-VM deployment via `docker-compose.prod.yml` — a deliberate choice per `Architecture §10`: no managed orchestration until there's real multi-contractor load to justify it.
 
+**🚀 Go live:** [`docs/deployment/GO-LIVE.md`](docs/deployment/GO-LIVE.md) — `make prod-init` → fill in `.env.prod` → `make prod-check` → `make prod-deploy` (HTTPS, smoke test and all).
+
 **📘 Full runbook: [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md)** — secrets setup, first deploy, verification, HTTPS, Razorpay dashboard setup, redeploys, rollback.
 **🔒 Security posture and what is deliberately not fixed: [`SECURITY.md`](SECURITY.md)** — read it before real customers are on.
 
@@ -147,7 +149,8 @@ Register as a customer or resource owner from the registration screen (contracto
 | 4️⃣ | 🏗️ **Resource Owner** | Accepts or rejects the request in **Booking Requests** |
 | 5️⃣ | 👷 **Contractor** | Generates a quotation — **location-aware** if the job falls inside a configured pilot service area, otherwise the contractor's flat assumption |
 | 6️⃣ | 👤 **Customer** | Reviews the quote (depth range + confidence badge are *always* shown, per `UI/UX §7`) and approves it |
-| 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** — `payments-data` creates the order, the signed webhook confirms it (needs live keys in production — see `PRODUCTION.md §4`) |
+| 7️⃣ | 👤 **Customer** | Pays via **Razorpay Checkout** (server-verified signature, webhook as backup — needs Razorpay keys, see `PRODUCTION.md §4`) **or in cash**, which only counts once a contractor confirms receipt. Sign-in is email/password or **Google** (optional, `GOOGLE_CLIENT_IDS`) |
+| 7b | 👷 **Contractor** | **Walk-in customer** (no account/app): *New walk-in job* on the Board takes their name, number and site; the contractor quotes, taps *Customer agreed* to approve for them, and *Record cash received* when paid. Walk-in jobs only - app customers always decide and pay themselves |
 | 8️⃣ | 👷 **Contractor** | Advances the job through its lifecycle, logs actual depth/cost at completion — variance is computed automatically |
 
 ---
@@ -203,7 +206,7 @@ Every workflow lives in `.github/workflows/`, runs on every push/PR, and is repr
 | `ci-frontend.yml` | `npm install` from repo root (workspace-aware) + `npm run lint` + `npm run build --workspace=web-app` | 🎯 `apps/**` |
 | `ci-borewell-native.yml` | `eslint-config-expo` lint + a real **Metro bundle** for iOS (proves every import in the app actually resolves) | 🎯 `apps/borewell-native/**` |
 | `ci-security.yml` | Weekly + on dependency changes: `bandit`, `pip-audit`, `npm audit` (fails on critical). Dependabot (`.github/dependabot.yml`) opens update PRs. All workflows run with `contents: read` only | 🎯 schedule + manifests |
-| `ci-deployment.yml` | Both compose files parse + every Dockerfile in the repo actually builds | 🎯 compose/Dockerfile changes |
+| `ci-deployment.yml` | Compose files (HTTP + HTTPS) validate from a generated `.env.prod`, go-live tooling tests, gateway covers every contract path, every Dockerfile builds | 🎯 compose/Dockerfile changes |
 | `ci-integration.yml` | 🔥 **The one workflow that boots all 4 real services via `docker compose up`** and runs a genuine cross-service flow over real HTTP — registration, job creation, marketplace search, booking accept, location-aware quotation, approval, payment, full lifecycle, completion + variance | 🌍 every push/PR, unscoped |
 
 > **Why a separate integration workflow?** Every per-service suite mocks its cross-service calls by design (see `fake_job_fetcher` in `services/quotation/tests/conftest.py`) — correct for testing one service in isolation, but it means no other workflow ever proved the services work *together*. This was an explicit, pre-existing requirement in `Borewell_05_Development_Plan.md` ("the Milestone 2 end-to-end flow, run via Docker Compose in CI") that nothing satisfied until `ci-integration.yml`.
@@ -221,6 +224,7 @@ Read **`STRUCTURE.md`** first. New services and apps are added by following the 
 | Doc | For |
 |---|---|
 | [`SECURITY.md`](SECURITY.md) | What was fixed in the security audits, what is deliberately not, and the pilot operator checklist |
+| [`docs/deployment/GO-LIVE.md`](docs/deployment/GO-LIVE.md) | The 8-step go-live checklist |
 | [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md) | Deploy runbook, HTTPS, Razorpay setup, rollback |
 | [`docs/BACKEND_INTEGRATION.md`](docs/BACKEND_INTEGRATION.md) | Auth contract, error format, CORS, Razorpay flow for the frontend |
 | [`docs/guides/HOW-TO-RUN.md`](docs/guides/HOW-TO-RUN.md), [`RUN-ON-PHONE.md`](docs/guides/RUN-ON-PHONE.md) | Run the native app (with or without Docker) |

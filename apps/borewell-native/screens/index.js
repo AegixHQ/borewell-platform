@@ -11,6 +11,7 @@ import CustomerJob from "./customer/CustomerJob";
 import ContractorBoard from "./contractor/ContractorBoard";
 import ContractorJob from "./contractor/ContractorJob";
 import FindRigs from "./contractor/FindRigs";
+import WalkIn from "./contractor/WalkIn";
 import Bookings from "./contractor/Bookings";
 import Setup from "./contractor/Setup";
 import OwnerRequests from "./owner/OwnerRequests";
@@ -23,6 +24,7 @@ export const SCREENS = {
 
   "contractor.board": { component: ContractorBoard, title: "Board" },
   "contractor.job": { component: ContractorJob, title: "Job" },
+  "contractor.walkin": { component: WalkIn, title: "Walk-in job" },
   "contractor.rigs": { component: FindRigs, title: "Find rigs" },
   "contractor.bookings": { component: Bookings, title: "Bookings" },
   "contractor.setup": { component: Setup, title: "Setup" },
@@ -70,4 +72,5 @@ export function homeFor(role) {
 export const TAB_FOR_ROUTE = {
   "customer.job": "customer.home",
   "contractor.job": "contractor.board",
+  "contractor.walkin": "contractor.board",
 };

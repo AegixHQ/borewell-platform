@@ -145,6 +145,28 @@ def create_order(payment_id: str, amount: Decimal, config: RazorpayConfig | None
     return response.json()
 
 
+def verify_payment_signature(
+    order_id: str,
+    razorpay_payment_id: str,
+    signature: str,
+    config: RazorpayConfig | None = None,
+) -> None:
+    """Checks the signature Razorpay Checkout returns to the client after a
+    successful payment: HMAC-SHA256 of "<order_id>|<razorpay_payment_id>",
+    keyed with the API key SECRET (not the webhook secret), as a hex digest.
+    Only Razorpay and this server hold the secret, so a client cannot forge a
+    valid signature for a payment that did not happen. Raises
+    WebhookSignatureInvalid on mismatch."""
+    cfg = config or get_razorpay_config()
+    expected = hmac.new(
+        cfg.key_secret.encode("utf-8"),
+        f"{order_id}|{razorpay_payment_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise WebhookSignatureInvalid("payment signature does not match")
+
+
 def verify_webhook_signature(
     raw_body: bytes, signature_header: str | None, config: RazorpayConfig | None = None
 ) -> None:

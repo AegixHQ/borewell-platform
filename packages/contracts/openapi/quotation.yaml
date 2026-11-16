@@ -128,7 +128,11 @@ paths:
           description: No quotation exists yet for this job
   /v1/quotations/{quotation_id}/approve:
     post:
-      summary: Customer approves a quotation
+      summary: |
+        Customer approves a quotation. For a WALK-IN job (customer has no
+        account) the contractor who quoted it - or an admin - approves on the
+        customer's behalf; decided_by records who. A contractor can never
+        approve an app customer's quotation (403).
       parameters:
         - name: quotation_id
           in: path
@@ -152,7 +156,9 @@ paths:
             (Approving an already-approved quotation is idempotent and returns 200.)
   /v1/quotations/{quotation_id}/reject:
     post:
-      summary: Customer rejects a quotation
+      summary: |
+        Customer rejects a quotation. Same on-behalf rule as approve: the
+        quoting contractor (or an admin) may reject for a walk-in customer only.
       parameters:
         - name: quotation_id
           in: path
@@ -230,3 +236,7 @@ components:
         total_estimate: { type: string, format: decimal, example: "95450.00" }
         depth_overage_rate_per_ft: { type: string, format: decimal, nullable: true, description: "Snapshot of the contractor's overage rate at generation/edit time (BR-05) - null only for quotations predating this field" }
         created_at: { type: string, format: date-time }
+        customer_id: { type: string, format: uuid, nullable: true, description: "The job's customer" }
+        contractor_id: { type: string, format: uuid, nullable: true, description: "The contractor who quoted it" }
+        walk_in: { type: boolean, description: "True when the customer has no account and the contractor decides for them" }
+        decided_by: { type: string, format: uuid, nullable: true, description: "Set when the approve/reject was made by someone other than the customer (the contractor/admin, for a walk-in)" }

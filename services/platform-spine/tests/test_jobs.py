@@ -125,3 +125,98 @@ def test_customer_cannot_advance_job_status(client):
         headers={"Authorization": f"Bearer {cust_token}"},
     )
     assert resp.status_code == 403
+
+
+# ---------- walk-in jobs ----------
+
+WALK_IN = {
+    "customer_name": "  Ramesh   Kumar ",
+    "customer_phone": "+91 98765-43210",
+    "location": {"lat": 13.0827, "lng": 80.2707},
+    "job_type": "agricultural",
+}
+
+
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_contractor_can_open_a_walk_in_job(client):
+    token = _register_and_login(client, "wi-contractor@example.com", "contractor")
+    resp = client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token))
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["walk_in"] is True
+    assert body["status"] == "lead"
+    assert body["customer_name"] == "Ramesh Kumar"  # whitespace tidied
+    assert body["customer_phone"] == "9876543210"  # normalised to 10 digits
+    assert body["customer_id"]
+
+
+def test_walk_in_customer_ids_are_fresh_each_time(client):
+    token = _register_and_login(client, "wi-contractor2@example.com", "contractor")
+    a = client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token)).json()
+    b = client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token)).json()
+    assert a["customer_id"] != b["customer_id"]
+
+
+def test_customer_cannot_open_a_walk_in_job(client):
+    token = _register_and_login(client, "wi-cust@example.com", "customer")
+    assert client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token)).status_code == 403
+
+
+def test_resource_owner_cannot_open_a_walk_in_job(client):
+    token = _register_and_login(client, "wi-owner@example.com", "resource_owner")
+    assert client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token)).status_code == 403
+
+
+def test_walk_in_requires_a_token(client):
+    assert client.post("/v1/jobs/walk-in", json=WALK_IN).status_code == 401
+
+
+def test_walk_in_job_is_invisible_to_app_customers_but_listed_for_contractors(client):
+    contractor = _register_and_login(client, "wi-contractor3@example.com", "contractor")
+    customer = _register_and_login(client, "wi-cust2@example.com", "customer")
+    job = client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(contractor)).json()
+
+    assert client.get("/v1/jobs", headers=_auth(customer)).json() == []
+    assert client.get(f"/v1/jobs/{job['job_id']}", headers=_auth(customer)).status_code == 403
+    listed = client.get("/v1/jobs", headers=_auth(contractor)).json()
+    assert [j["job_id"] for j in listed] == [job["job_id"]]
+    assert listed[0]["walk_in"] is True
+
+
+def test_normal_jobs_are_not_walk_ins(client):
+    token = _register_and_login(client, "wi-cust3@example.com", "customer")
+    resp = client.post(
+        "/v1/jobs",
+        json={"location": {"lat": 13.0827, "lng": 80.2707}, "job_type": "residential"},
+        headers=_auth(token),
+    )
+    body = resp.json()
+    assert body["walk_in"] is False
+    assert body["customer_name"] is None and body["customer_phone"] is None
+
+
+def test_walk_in_validation(client):
+    token = _register_and_login(client, "wi-contractor4@example.com", "contractor")
+    for bad in (
+        {**WALK_IN, "customer_name": "   "},
+        {**WALK_IN, "customer_name": "x" * 101},
+        {**WALK_IN, "customer_phone": "12345"},
+        {**WALK_IN, "customer_phone": "98765abcde"},
+        {**WALK_IN, "job_type": "spaceship"},
+        {**WALK_IN, "location": {"lat": 0, "lng": 0}},
+    ):
+        resp = client.post("/v1/jobs/walk-in", json=bad, headers=_auth(token))
+        assert resp.status_code == 422, bad
+
+
+def test_contractor_can_advance_a_walk_in_job(client):
+    token = _register_and_login(client, "wi-contractor5@example.com", "contractor")
+    job = client.post("/v1/jobs/walk-in", json=WALK_IN, headers=_auth(token)).json()
+    resp = client.patch(
+        f"/v1/jobs/{job['job_id']}/status", json={"status": "site_location"}, headers=_auth(token)
+    )
+    assert resp.status_code == 200
+    assert resp.json()["walk_in"] is True

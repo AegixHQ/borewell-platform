@@ -177,6 +177,9 @@ function seedJob({ status, jobType, lat, lng, ageDays, customerId = CUSTOMER.id 
     job_type: jobType,
     location: { lat, lng },
     created_at: iso(now - ageDays * DAY),
+    walk_in: false,
+    customer_name: null,
+    customer_phone: null,
   };
   jobs.push(job);
   return job;
@@ -208,6 +211,9 @@ function quoteFor(job, { version = 1, status = "draft" } = {}) {
     quotation_id: uuid(),
     job_id: job.job_id,
     customer_id: job.customer_id,
+    contractor_id: CONTRACTOR.id,
+    walk_in: !!job.walk_in,
+    decided_by: null,
     version,
     status,
     estimated_depth_range: {
@@ -262,6 +268,8 @@ payments.push({
   status: "completed",
   razorpay_order_id: "order_demo123",
   razorpay_payment_id: "pay_demo456",
+  method: "online",
+  cash_confirmed_at: null,
   created_at: iso(now - 4 * DAY),
 });
 
@@ -358,6 +366,34 @@ async function handle(method, path, body, headers) {
       job_type: body.job_type,
       location: body.location,
       created_at: iso(Date.now()),
+      walk_in: false,
+      customer_name: null,
+      customer_phone: null,
+    };
+    jobs.unshift(job);
+    return ok(job, 201);
+  }
+  if (path === "/v1/jobs/walk-in" && method === "POST") {
+    if (me.role !== "contractor" && me.role !== "admin") {
+      return fail(403, "FORBIDDEN", "Only a contractor or admin may open a walk-in job.");
+    }
+    const name = String(body.customer_name || "").trim().replace(/\s+/g, " ");
+    const phone = String(body.customer_phone || "").replace(/\+91|[\s-]/g, "");
+    if (!name) return fail(422, "VALIDATION_ERROR", "customer_name must not be blank");
+    if (!/^\d{10}$/.test(phone)) {
+      return fail(422, "VALIDATION_ERROR", "customer_phone must be a valid 10-digit Indian mobile number");
+    }
+    // Like the real service: a fresh customer id that belongs to no account.
+    const job = {
+      job_id: uuid(),
+      customer_id: uuid(),
+      status: "lead",
+      job_type: body.job_type,
+      location: body.location,
+      created_at: iso(Date.now()),
+      walk_in: true,
+      customer_name: name,
+      customer_phone: phone,
     };
     jobs.unshift(job);
     return ok(job, 201);
@@ -444,6 +480,14 @@ async function handle(method, path, body, headers) {
   }
   if (seg[1] === "quotations" && (seg[3] === "approve" || seg[3] === "reject") && method === "POST") {
     const q = quotations.find((x) => x.quotation_id === seg[2]);
+    if (me.role === "customer") {
+      if (q.customer_id !== me.id) return fail(403, "FORBIDDEN", "You do not have access to this quotation.");
+    } else {
+      // Like the real service: a contractor decides only for a walk-in (a
+      // customer with no account) - never for someone who has the app.
+      if (!q.walk_in) return fail(403, "FORBIDDEN", "Only the customer can approve or reject this quotation.");
+      q.decided_by = me.id;
+    }
     q.status = seg[3] === "approve" ? "approved" : "rejected";
     return ok(q);
   }
@@ -550,10 +594,12 @@ async function handle(method, path, body, headers) {
     const mine = me.role === "customer"
       ? payments.filter((p) => jobs.find((j) => j.job_id === p.job_id)?.customer_id === me.id)
       : payments;
-    return ok(mine);
+    return ok([...mine].reverse()); // newest first, like the real service
   }
   if (path === "/v1/payments" && method === "POST") {
-    const existing = payments.find((p) => p.quotation_id === body.quotation_id);
+    // Like the real service: one live (pending or completed) payment per
+    // quotation; a failed one is closed and a new attempt starts fresh.
+    const existing = payments.find((p) => p.quotation_id === body.quotation_id && p.status !== "failed");
     if (existing) return ok(existing, 201);
     const payment = {
       payment_id: uuid(),
@@ -563,9 +609,48 @@ async function handle(method, path, body, headers) {
       status: "pending",
       razorpay_order_id: null,
       razorpay_payment_id: null,
+      method: "online",
+      cash_confirmed_at: null,
       created_at: iso(Date.now()),
     };
     payments.push(payment);
+    return ok(payment, 201);
+  }
+  if (path === "/v1/payments/walk-in-cash" && method === "POST") {
+    if (me.role !== "contractor" && me.role !== "admin") {
+      return fail(403, "FORBIDDEN", "This action requires one of roles: contractor, admin.");
+    }
+    const q = quotations.find((x) => x.quotation_id === body.quotation_id);
+    if (!q) return fail(404, "QUOTATION_NOT_FOUND", "No quotation with this ID exists.");
+    if (q.job_id !== body.job_id) return fail(400, "JOB_QUOTATION_MISMATCH", "quotation_id does not belong to the given job_id.");
+    if (q.status !== "approved") return fail(400, "QUOTATION_NOT_APPROVED", "This quotation has not been approved yet.");
+    if (money(body.amount) !== q.total_estimate) {
+      return fail(400, "AMOUNT_MISMATCH", `Payment amount (${body.amount}) does not match the approved quotation total (${q.total_estimate}).`);
+    }
+    if (!q.walk_in) {
+      return fail(403, "NOT_A_WALK_IN", "Cash can be recorded this way only for a walk-in job.");
+    }
+    const live = payments.find((p) => p.quotation_id === q.quotation_id && p.status !== "failed");
+    if (live) {
+      return live.status === "completed" && live.cash_confirmed_by === me.id
+        ? ok(live, 201)
+        : fail(409, "ALREADY_PAID", "This quotation has already been paid.");
+    }
+    const payment = {
+      payment_id: uuid(),
+      job_id: q.job_id,
+      quotation_id: q.quotation_id,
+      amount: q.total_estimate,
+      status: "pending",
+      razorpay_order_id: null,
+      razorpay_payment_id: null,
+      method: "cash",
+      cash_confirmed_at: iso(Date.now()),
+      cash_confirmed_by: me.id,
+      created_at: iso(Date.now()),
+    };
+    payments.push(payment);
+    settleDemoPayment(payment, null);
     return ok(payment, 201);
   }
   if (seg[1] === "payments" && seg[3] === "create-order" && method === "POST") {
@@ -577,6 +662,47 @@ async function handle(method, path, body, headers) {
       amount_paise: Math.round(Number(payment.amount) * 100),
       currency: "INR",
     });
+  }
+  if (seg[1] === "payments" && seg[3] === "verify" && method === "POST") {
+    // The real service checks Razorpay's HMAC signature; there is no secret
+    // in the demo, so any result for the right order is accepted.
+    const payment = payments.find((p) => p.payment_id === seg[2]);
+    if (!payment) return fail(404, "PAYMENT_NOT_FOUND", "No payment with this ID.");
+    if (payment.razorpay_order_id !== body.razorpay_order_id) {
+      return fail(400, "ORDER_MISMATCH", "That Razorpay order does not belong to this payment.");
+    }
+    settleDemoPayment(payment, body.razorpay_payment_id);
+    return ok(payment);
+  }
+  if (seg[1] === "payments" && seg[3] && ["choose-cash", "choose-online", "confirm-cash", "reject-cash"].includes(seg[3]) && method === "POST") {
+    const payment = payments.find((p) => p.payment_id === seg[2]);
+    if (!payment) return fail(404, "PAYMENT_NOT_FOUND", "No payment with this ID.");
+    if (seg[3].startsWith("choose") && me.role !== "customer") {
+      return fail(403, "FORBIDDEN", "Only the customer can choose how to pay.");
+    }
+    if (seg[3] === "confirm-cash" || seg[3] === "reject-cash") {
+      if (me.role !== "contractor") return fail(403, "FORBIDDEN", "Only a contractor can do this.");
+      if (payment.method !== "cash") return fail(409, "NOT_A_CASH_PAYMENT", "The customer did not choose cash.");
+      if (seg[3] === "confirm-cash") {
+        if (payment.status === "pending") {
+          payment.cash_confirmed_at = iso(Date.now());
+          settleDemoPayment(payment, null);
+        }
+      } else if (payment.status === "completed") {
+        return fail(409, "PAYMENT_ALREADY_COMPLETED", "This payment was already confirmed and cannot be rejected.");
+      } else if (payment.status === "pending") {
+        payment.status = "failed";
+      }
+      return ok(payment);
+    }
+    if (payment.status !== "pending") return fail(409, "PAYMENT_NOT_PENDING", `Payment status is '${payment.status}', not 'pending'.`);
+    if (seg[3] === "choose-cash") {
+      if (payment.razorpay_order_id) return fail(409, "ONLINE_ORDER_OPEN", "An online payment is already open for this quotation.");
+      payment.method = "cash";
+    } else {
+      payment.method = "online";
+    }
+    return ok(payment);
   }
   if (seg[1] === "payments" && seg.length === 3 && method === "GET") {
     const payment = payments.find((p) => p.payment_id === seg[2]);
@@ -593,12 +719,13 @@ function latestQuote(jobId) {
 }
 
 /** Marks a demo payment completed - stands in for Razorpay's signed webhook. */
-export function completeDemoPayment(orderId) {
-  const payment = payments.find((p) => p.razorpay_order_id === orderId);
-  if (payment) {
-    payment.status = "completed";
-    payment.razorpay_payment_id = `pay_demo_${Date.now()}`;
-  }
+function settleDemoPayment(payment, razorpayPaymentId) {
+  payment.status = "completed";
+  if (razorpayPaymentId) payment.razorpay_payment_id = razorpayPaymentId;
+  // The real services move the job from "completion" to "payment" when
+  // payment-data publishes payment.completed.
+  const job = jobs.find((j) => j.job_id === payment.job_id);
+  if (job && job.status === "completion") job.status = "payment";
 }
 
 export function installMockApi() {

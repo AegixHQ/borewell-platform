@@ -229,15 +229,52 @@ look:
    meant to be seen by the client, unlike the secret). Reopening this
    endpoint for the same payment reuses the existing order rather than
    creating a duplicate.
-3. Your frontend mounts Razorpay's Checkout SDK using that `key_id` and
+3. Your frontend opens Razorpay's Checkout with that `key_id` and
    `order_id` — **your frontend never needs its own copy of any Razorpay
-   key**, dev or prod. The backend hands you the right one dynamically
-   based on whichever key it's configured with server-side.
-4. Razorpay's webhook (not your frontend) is what actually confirms
-   payment completion on the backend — your frontend doesn't need to call
-   anything else to "finish" a payment; poll `GET /v1/jobs/{job_id}` (or
-   `GET /v1/payments/{payment_id}`) to see the status update once the
-   webhook lands, typically within seconds.
+   key**, dev or prod.
+4. When Checkout succeeds it hands back `razorpay_order_id`,
+   `razorpay_payment_id` and `razorpay_signature`. Send them to
+   `POST /v1/payments/{payment_id}/verify`; the server checks the HMAC with
+   the key secret and only then marks the payment `completed`. The client's
+   own "it worked" is never trusted. Razorpay's signed webhook
+   (`/v1/payments/webhook`) is the backup that completes the same payment if
+   the app was closed before `/verify` ran — and the only path that works
+   when the server is not reachable from the internet, so `/verify` is what
+   makes local and pilot setups work. Both are idempotent.
+
+**Cash.** The customer can instead call
+`POST /v1/payments/{id}/choose-cash` (undo with `/choose-online`). The
+payment stays `pending` with `method: "cash"` until a contractor or admin
+calls `/confirm-cash` (→ `completed`) or `/reject-cash` (→ `failed`; the
+customer may start a new payment with a new idempotency key). A cash payment
+cannot be chosen once an online order exists for it. Completing it publishes
+the same `payment.completed` event, so the job advances exactly as for an
+online payment.
+
+**Walk-in customers (no account).** A customer who comes to the contractor in
+person has no account, so the contractor stands in for them on that one job:
+
+1. `POST /v1/jobs/walk-in` (platform-spine, contractor/admin) with
+   `customer_name`, `customer_phone` (10-digit mobile), `location`, `job_type`.
+   The job gets `walk_in: true` and a **fresh `customer_id` that belongs to no
+   user** - nobody can sign in as it and no app customer ever sees the job.
+   Emits `job.created` like any other job.
+2. The contractor generates the quotation as usual. The quotation records
+   `walk_in` (copied from the job) and the customer/contractor ids.
+3. `POST /v1/quotations/{id}/approve` or `/reject` is allowed for the quoting
+   contractor (or an admin) **only when `walk_in` is true**; `decided_by`
+   records who decided. For every app customer's quotation it is still `403`.
+4. `POST /v1/payments/walk-in-cash` (payments-data, contractor/admin) with the
+   usual `job_id`, `quotation_id`, `amount` (exactly the approved total) and
+   `idempotency_key` creates the payment already `completed` (`method: "cash"`)
+   and publishes `payment.completed`. Walk-in quotations only (`403
+   NOT_A_WALK_IN` otherwise), by the contractor who quoted it. Online (Razorpay)
+   payment is not offered for walk-ins - there is no app to run Checkout in.
+
+**Google sign-in.** `POST /v1/auth/google` takes the Google ID token (and a
+`role` only for a first-time account), verifies it against Google's keys and
+audience (`GOOGLE_CLIENT_IDS`), and returns the same token as `/login`.
+A first-time account without a `role` gets `409 ROLE_REQUIRED`.
 
 **Practical consequence for you:** switching this backend from Razorpay
 test-mode to live-mode keys is a pure server-side env-var change with zero

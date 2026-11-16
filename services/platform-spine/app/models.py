@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, Numeric, String
+from sqlalchemy import Boolean, Column, DateTime, Float, Numeric, String
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy import false as sa_false
 
 from app.database import Base
 
@@ -34,6 +35,9 @@ class User(Base):
     phone = Column(String, nullable=True)
     password_hash = Column(String, nullable=False)
     role = Column(SAEnum(*ROLES, name="user_role"), nullable=False)
+    # Google's stable account ID ("sub"), set the first time this user signs
+    # in with Google. Null for accounts that have only ever used a password.
+    google_sub = Column(String, unique=True, nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -47,6 +51,14 @@ class Job(Base):
     location_lng = Column(Float, nullable=False)
     job_type = Column(String, nullable=False)
     status = Column(SAEnum(*JOB_STATUSES, name="job_status"), nullable=False, default="lead")
+    # Walk-in: a customer who came to the contractor in person and has no
+    # account. The contractor created the job; customer_id is a fresh id with
+    # no users row (nobody can sign in as it), and the contractor acts for the
+    # customer on this job only - see quotation/payments-data. The name and
+    # phone live here because there is no users row to hold them.
+    walk_in = Column(Boolean, nullable=False, default=False, server_default=sa_false())
+    customer_name = Column(String(100), nullable=True)
+    customer_phone = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

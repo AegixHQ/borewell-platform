@@ -131,6 +131,29 @@ export async function createJob(platformSpineUrl, token, { lat, lng, jobType }) 
   });
 }
 
+/**
+ * A contractor opens a job for a customer who came in person and has no
+ * account (contractor/admin only). The server gives the job its own customer
+ * id and marks it walk_in; the contractor then approves the quote for the
+ * customer and records the cash (recordWalkInCash). POST /v1/jobs/walk-in.
+ */
+export async function createWalkInJob(
+  platformSpineUrl,
+  token,
+  { customerName, customerPhone, lat, lng, jobType }
+) {
+  return request(platformSpineUrl, "/v1/jobs/walk-in", {
+    method: "POST",
+    token,
+    body: {
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      location: { lat, lng },
+      job_type: jobType,
+    },
+  });
+}
+
 export async function listMyJobs(platformSpineUrl, token) {
   return request(platformSpineUrl, "/v1/jobs", { token });
 }
@@ -335,6 +358,61 @@ export async function createRazorpayOrder(paymentsUrl, token, paymentId) {
     method: "POST",
     token,
   });
+}
+
+// Completes an online payment from what Razorpay Checkout handed back. The
+// server checks the HMAC signature; the client never decides success.
+export async function verifyRazorpayPayment(paymentsUrl, token, paymentId, result) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/verify`, {
+    method: "POST",
+    token,
+    body: {
+      razorpay_order_id: result.razorpay_order_id,
+      razorpay_payment_id: result.razorpay_payment_id,
+      razorpay_signature: result.razorpay_signature,
+    },
+  });
+}
+
+// Cash: the customer chooses it, a contractor confirms (or rejects) receipt.
+/**
+ * Contractor/admin records the cash a WALK-IN customer handed over: the payment
+ * is created already completed. Walk-in jobs only - for an app customer the
+ * cash path is chooseCashPayment (customer) then confirmCashPayment (you).
+ * `amount` goes back exactly as the quotation gave it (see createPayment).
+ * POST /v1/payments/walk-in-cash.
+ */
+export async function recordWalkInCash(
+  paymentsUrl,
+  token,
+  { jobId, quotationId, amount, idempotencyKey }
+) {
+  return request(paymentsUrl, "/v1/payments/walk-in-cash", {
+    method: "POST",
+    token,
+    body: {
+      job_id: jobId,
+      quotation_id: quotationId,
+      amount,
+      idempotency_key: idempotencyKey,
+    },
+  });
+}
+
+export async function chooseCashPayment(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/choose-cash`, { method: "POST", token });
+}
+
+export async function chooseOnlinePayment(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/choose-online`, { method: "POST", token });
+}
+
+export async function confirmCashPayment(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/confirm-cash`, { method: "POST", token });
+}
+
+export async function rejectCashPayment(paymentsUrl, token, paymentId) {
+  return request(paymentsUrl, `/v1/payments/${paymentId}/reject-cash`, { method: "POST", token });
 }
 
 // resource-network: pilot service areas

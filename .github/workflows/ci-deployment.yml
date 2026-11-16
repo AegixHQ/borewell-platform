@@ -14,7 +14,12 @@ on:
     paths:
       - 'docker-compose.yml'
       - 'docker-compose.prod.yml'
+      - 'docker-compose.tls.yml'
       - '.env.prod.example'
+      - 'tools/go-live/**'
+      - 'packages/contracts/openapi/*.yaml'
+      - 'infra/**'
+      - 'Makefile'
       - 'services/*/Dockerfile'
       - 'apps/web-app/Dockerfile'
       - 'apps/web-app/Dockerfile.dev'
@@ -24,7 +29,12 @@ on:
     paths:
       - 'docker-compose.yml'
       - 'docker-compose.prod.yml'
+      - 'docker-compose.tls.yml'
       - '.env.prod.example'
+      - 'tools/go-live/**'
+      - 'packages/contracts/openapi/*.yaml'
+      - 'infra/**'
+      - 'Makefile'
       - 'services/*/Dockerfile'
       - 'apps/web-app/Dockerfile'
       - 'apps/web-app/Dockerfile.dev'
@@ -44,13 +54,34 @@ jobs:
       - name: Validate docker-compose.yml (dev)
         run: docker compose -f docker-compose.yml config --quiet
 
-      - name: Validate docker-compose.prod.yml against .env.prod.example
-        # Real .env.prod is gitignored and never exists in CI - the
-        # .example file has placeholder values for every variable, which
-        # is all `config` needs to confirm the file's structure and
-        # interpolation syntax are actually correct (not whether the
-        # placeholder secrets are usable, which they deliberately aren't).
-        run: docker compose -f docker-compose.prod.yml --env-file .env.prod.example config --quiet
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Go-live tooling tests and gateway route coverage
+        run: |
+          pip install pytest pyyaml
+          python -m pytest tools/go-live/tests -q
+          python tools/go-live/check_gateway_routes.py
+
+      - name: Generate a throwaway .env.prod the way a user would
+        # `make prod-init` is the documented first step, so CI runs it. The
+        # result must pass the same preflight a real deploy runs.
+        run: |
+          python tools/go-live/init_env.py --domain api.ci-test.in --email ci@ci-test.in
+          python tools/go-live/preflight.py
+
+      - name: Validate docker-compose.prod.yml (plain HTTP)
+        run: docker compose -f docker-compose.prod.yml --env-file .env.prod config --quiet
+
+      - name: Validate docker-compose.prod.yml + docker-compose.tls.yml (what make prod-deploy runs)
+        run: docker compose -f docker-compose.prod.yml -f docker-compose.tls.yml --env-file .env.prod config --quiet
+
+      - name: The unfilled template must NOT start a stack
+        run: |
+          if docker compose -f docker-compose.prod.yml --env-file .env.prod.example config --quiet 2>/dev/null; then
+            echo "The template validated without a domain - the required-variable guards are gone"; exit 1
+          fi
 
   build-backend-images:
     runs-on: ubuntu-latest

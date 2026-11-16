@@ -1,0 +1,133 @@
+name: Build demo APK
+
+# Builds an installable Android APK of apps/borewell-native, no Expo account
+# needed. Three flavours, chosen when you press "Run workflow":
+#   - LIVE (production): `api_domain` = your HTTPS hostname (the PUBLIC_DOMAIN
+#     from .env.prod). All four service URLs become https://<api_domain>.
+#     Tip: set the repository *variables* API_DOMAIN and GOOGLE_WEB_CLIENT_ID
+#     once (Settings -> Secrets and variables -> Actions -> Variables) and
+#     leave the inputs blank - they are used as the defaults.
+#   - LIVE on a home network: `lan_host` = the machine's IP (ports 8001-8004,
+#     plain http - not for production).
+#   - DEMO (the default, and every push to demo-apk): built-in sample data, no
+#     backend, simulated payments, no Google sign-in.
+# Variable values look like (made-up examples):
+#   API_DOMAIN            = api.yourdomain.in
+#   GOOGLE_WEB_CLIENT_ID  = 123456789012-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com
+# Google's "Continue with Google" appears in a live build when a Google *Web*
+# client ID is given. The APK lands on a draft release; its notes include the
+# signing key's SHA-1, which Google's Android OAuth client needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_domain:
+        description: "LIVE: your API hostname, e.g. api.yourdomain.in (blank = repo variable API_DOMAIN)"
+        required: false
+        default: ""
+      lan_host:
+        description: "LIVE on a home network: IP of the machine running the services"
+        required: false
+        default: ""
+      google_web_client_id:
+        description: "Google *Web application* OAuth client ID (blank = repo variable GOOGLE_WEB_CLIENT_ID)"
+        required: false
+        default: ""
+      demo_only:
+        description: "Force a DEMO build even if API_DOMAIN is set"
+        type: boolean
+        default: false
+  push:
+    branches: [demo-apk]
+
+permissions:
+  contents: write   # only to attach the APK to a draft release
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/borewell-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci --no-audit --no-fund
+      - name: Choose demo or live, and set the server addresses
+        env:
+          EVENT: ${{ github.event_name }}
+          DEMO_ONLY: ${{ inputs.demo_only }}
+          DOMAIN: ${{ inputs.api_domain || vars.API_DOMAIN }}
+          LAN: ${{ inputs.lan_host }}
+          # Public identifier (not a secret); the repo variable or the dispatch input overrides it.
+          GOOGLE: ${{ inputs.google_web_client_id || vars.GOOGLE_WEB_CLIENT_ID || '603105294808-8cqk32vc3c1kkpk25u72bi9gq17hs8ir.apps.googleusercontent.com' }}
+        run: |
+          DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%/}"
+          if [ "$EVENT" = push ] || [ "$DEMO_ONLY" = true ] || { [ -z "$DOMAIN" ] && [ -z "$LAN" ]; }; then
+            echo "KIND=demo" >> "$GITHUB_ENV"
+            echo "EXPO_PUBLIC_DEMO=1" >> "$GITHUB_ENV"
+          elif [ -n "$DOMAIN" ]; then
+            echo "Live build against https://$DOMAIN"
+            {
+              echo "KIND=live"
+              echo "EXPO_PUBLIC_DEMO=0"
+              echo "EXPO_PUBLIC_PLATFORM_SPINE_URL=https://$DOMAIN"
+              echo "EXPO_PUBLIC_QUOTATION_URL=https://$DOMAIN"
+              echo "EXPO_PUBLIC_RESOURCE_NETWORK_URL=https://$DOMAIN"
+              echo "EXPO_PUBLIC_PAYMENTS_URL=https://$DOMAIN"
+              echo "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=$GOOGLE"
+            } >> "$GITHUB_ENV"
+          else
+            echo "Live build against http://$LAN (home network only)"
+            {
+              echo "KIND=live"
+              echo "LAN_HOST=$LAN"
+              echo "EXPO_PUBLIC_DEMO=0"
+              echo "EXPO_PUBLIC_PLATFORM_SPINE_URL=http://$LAN:8001"
+              echo "EXPO_PUBLIC_QUOTATION_URL=http://$LAN:8002"
+              echo "EXPO_PUBLIC_RESOURCE_NETWORK_URL=http://$LAN:8003"
+              echo "EXPO_PUBLIC_PAYMENTS_URL=http://$LAN:8004"
+              echo "EXPO_PUBLIC_ALLOW_INSECURE_HTTP=1"
+              echo "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=$GOOGLE"
+            } >> "$GITHUB_ENV"
+          fi
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Allow plain-http to the LAN (live build only)
+        if: env.LAN_HOST != ''
+        run: sed -i 's/<application /<application android:usesCleartextTraffic="true" /' android/app/src/main/AndroidManifest.xml
+      - name: Allow slow Gradle download
+        run: sed -i 's/^networkTimeout=.*/networkTimeout=180000/' android/gradle/wrapper/gradle-wrapper.properties
+      - name: Build the APK (arm64 phones)
+        working-directory: apps/borewell-native/android
+        run: |
+          # services.gradle.org occasionally answers 504; retry the whole build.
+          for attempt in 1 2 3 4 5; do
+            ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a && exit 0
+            echo "Attempt $attempt failed; retrying in 45s"; sleep 45
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: borewell-demo-apk
+          path: apps/borewell-native/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Attach the APK to a draft release (easy download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/borewell-native/android/app/build/outputs/apk/release
+        run: |
+          cp app-release.apk "borewell-$KIND.apk"
+          SHA1=$(keytool -list -v -keystore "$GITHUB_WORKSPACE/apps/borewell-native/android/app/debug.keystore" \
+            -storepass android -alias androiddebugkey 2>/dev/null | grep "SHA1:" | head -1 | sed 's/.*SHA1: *//')
+          gh release create "$KIND-apk-${{ github.run_number }}" "borewell-$KIND.apk" \
+            --draft --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "Borewell $KIND APK (build ${{ github.run_number }})" \
+            --notes "Android APK ($KIND build), arm64 phones. Signing key SHA-1 (for the Google Android OAuth client, package in.aegix.borewell): $SHA1"

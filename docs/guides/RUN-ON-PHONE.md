@@ -207,8 +207,11 @@ less tedious than signing in and out.
 | "Network request failed" on sign-in | Phone can't reach the PC: wrong IP, firewall rule missing, different Wi-Fi, or a service not started with `--host 0.0.0.0`. |
 | Login works, then every screen 401s | `JWT_SECRET` differs between terminals. It must be the same string in all four. |
 | "Set your pricing rule…" when quoting | Step 2 above — the quotation service refuses to invent prices. |
-| Payment says the sheet can't open | Known gap: Razorpay Checkout needs a native module that isn't installed. The order is created for real; see `apps/borewell-native/lib/checkout.js`. |
-| Map is blank grey | Tiles come from OpenStreetMap over the internet — the phone needs a working connection, and they fade in a second late. |
+| "Online payment isn't switched on" | The server has no Razorpay keys. Put `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` (test keys are fine) in `services\payments-data\.env` and restart it. Cash works without them. |
+| Razorpay opens but the job stays unpaid | The server rejected the signature (wrong `RAZORPAY_KEY_SECRET`) or couldn't be reached. Don't pay again; check payments-data's log. |
+| No "Continue with Google" button | Needs `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` at build time, and a real build (APK/dev build) — not Expo Go or web. |
+| Google sign-in fails with a developer error | The Android OAuth client's package name or SHA-1 doesn't match the APK's signing key, or the Web client ID differs from the server's `GOOGLE_CLIENT_IDS`. |
+| Map is blank grey | Tiles load over the internet (OpenStreetMap, then CARTO as a fallback) — the phone needs a connection, and they fade in a second late. |
 | Names are missing everywhere | The API carries only IDs; there is no users endpoint yet. Screens show a job code and the village name instead. |
 
 ## Resetting

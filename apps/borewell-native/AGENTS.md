@@ -29,12 +29,15 @@ services/demo.js         in-memory backend (originally ported from web-app's moc
 lib/session.js           session + expo-secure-store persistence
 lib/hooks.js             useLoad / useAction / useToast / useAreaName
 lib/nav.js               the stack navigator (90 lines, no dependency)
-lib/checkout.js          Razorpay handoff - and the documented gap in it
+lib/razorpay.js          Razorpay Checkout options + the HTML the native WebView loads
+lib/google.js            Google sign-in (native module; lib/google.web.js is a no-op)
 components/ui.js         buttons, cards, badges, pills, sheets, icons
-components/SiteMap.js    OSM tile map, no native module
+components/SiteMap.js    OSM tile map (sends the User-Agent/Referer OSM requires; falls back to CARTO), no native module
+components/RazorpaySheet.js  Razorpay Checkout in a WebView (.web.js loads checkout.js directly)
 components/DepthGauge.js the depth ruler, in Views rather than SVG
 components/StageViews.js the 14-stage rail and the 5 customer steps
 components/AppShell.js   top bar, page header, tab bar
+screens/contractor/WalkIn.js  "New walk-in job" for a customer with no account (see docs/BACKEND_INTEGRATION.md)
 screens/index.js         route table + the tabs each role gets
 screens/**               one file per screen, grouped by role
 ```
@@ -72,7 +75,7 @@ screens/**               one file per screen, grouped by role
 Reported honestly, per the root AGENTS.md:
 
 - `npm run lint` - clean.
-- `npm run bundle-check` - Metro bundles for iOS, 549 modules.
+- `npm run bundle-check` - Metro bundles for iOS (569 modules) and Android (567).
 - `npm run web` + a headless browser at 390x844: signed in as all three
   seeded demo accounts, walked every screen, and completed two real
   flows end to end against `services/demo.js` - customer approves a
@@ -80,11 +83,35 @@ Reported honestly, per the root AGENTS.md:
   path the webhook drives), and a rig owner accepts a booking request
   (the listing flips to Reserved and drops out of the searchable count).
   No console or page errors.
+- Payments in demo mode, headless: customer approves, chooses **cash**, a
+  contractor confirms receipt (job shows Paid); cash declined then retried
+  online; online payment through the demo backend. The real Razorpay sheet
+  and Google sign-in have **not** been run - they need real credentials and a
+  device. The map falls back to CARTO tiles when OpenStreetMap is blocked
+  (seen in the headless browser); the OSM-with-headers path itself has not
+  been seen on an Android device.
+- Walk-in customers, headless against `services/demo.js`: contractor opens a
+  walk-in job (form validation shown), generates the quote, taps *Customer
+  agreed*, then *Record cash received* (job shows Paid, "Walk-in" badge on the
+  Board); the customer account does not see the job. Not run against the real
+  services from the app (the backend behaviour is covered by each service's tests).
 - **Not** run on a physical device or a simulator, and not yet run against
   the real four services from a phone. The web preview exercises the same
   JavaScript, but layout on a real device, `expo-secure-store` and the
   Android back button have not been seen working. Do that before calling
   anything here field-tested.
+
+## Native modules added for payments and Google sign-in
+
+`react-native-webview` (hosts Razorpay's own checkout.js page, so there is no
+Razorpay native SDK to build) and `@react-native-google-signin/google-signin`
+(the library Expo's Google-authentication guide recommends; a browser-redirect
+flow has Android custom-scheme pitfalls). Both are native, so **the app no
+longer runs in Expo Go** - use a development build or the APK. `npx expo
+install` could not reach Expo's API when they were added, so
+`react-native-webview` was installed with `npm install` at the version in
+`expo/bundledNativeModules.json`, and google-signin at 17.0.0 from npm. Run
+`npx expo install --check` when you can.
 
 ## Local development
 

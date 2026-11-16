@@ -69,3 +69,21 @@ export async function registerAccount(platformSpineUrl, { email, password, phone
   }
   return response.json(); // { access_token, role }
 }
+
+// Google sign-in: sends the Google ID token to platform-spine, which verifies
+// it and returns our own session token. role is only used when this creates a
+// new account; without it a first-time Google user gets code ROLE_REQUIRED.
+export async function googleLogin(platformSpineUrl, idToken, role) {
+  const response = await fetch(`${platformSpineUrl}/v1/auth/google`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id_token: idToken, role: role || undefined }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const err = new Error(body?.error?.message || "Google sign-in failed");
+    err.code = body?.error?.code;
+    throw err;
+  }
+  return response.json(); // { access_token, role, new_account }
+}

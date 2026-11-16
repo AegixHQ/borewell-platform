@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,11 +12,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import bootstrap, events, models, payment_consumer, quotation_client, schemas
+from app import (
+    bootstrap,
+    events,
+    google_auth,
+    models,
+    payment_consumer,
+    quotation_client,
+    schemas,
+)
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
@@ -198,6 +207,17 @@ def readyz(db: Session = Depends(get_db)):
 # ---------- auth (FR-AUTH-01 .. FR-AUTH-04) ----------
 
 
+def _require_role_open_for_signup(role: str) -> None:
+    if role == "contractor" and os.getenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "1") == "0":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "CONTRACTOR_REGISTRATION_CLOSED",
+                "message": "Contractor accounts are created by the platform administrator.",
+            },
+        )
+
+
 @app.post(
     "/v1/auth/register",
     response_model=schemas.TokenResponse,
@@ -209,17 +229,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     # is single-contractor), so once the pilot contractor exists, public
     # sign-up for that role must be closed: ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0.
     # New contractors are then created by an operator: python -m app.bootstrap create-user.
-    if (
-        payload.role == "contractor"
-        and os.getenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "1") == "0"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "CONTRACTOR_REGISTRATION_CLOSED",
-                "message": "Contractor accounts are created by the platform administrator.",
-            },
-        )
+    _require_role_open_for_signup(payload.role)
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
         raise HTTPException(
@@ -268,6 +278,114 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     return schemas.TokenResponse(access_token=token, role=user.role)
 
 
+@app.post(
+    "/v1/auth/google",
+    response_model=schemas.TokenResponse,
+    dependencies=[Depends(login_rate_limit)],
+)
+def google_sign_in(payload: schemas.GoogleLoginRequest, db: Session = Depends(get_db)):
+    """Sign in (or sign up) with a Google ID token. The token is verified
+    here - signature, audience, issuer, expiry, verified email - and only then
+    is an account found or created. Admin accounts cannot use this route."""
+    try:
+        claims = google_auth.verify_google_id_token(payload.id_token)
+    except google_auth.GoogleNotConfigured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "GOOGLE_NOT_CONFIGURED",
+                "message": "Google sign-in is not switched on for this server.",
+            },
+        )
+    except google_auth.GoogleUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "GOOGLE_UNAVAILABLE",
+                "message": "Could not reach Google to check the sign-in. Try again.",
+            },
+        )
+    except google_auth.GoogleTokenInvalid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "INVALID_GOOGLE_TOKEN",
+                "message": "Google sign-in could not be verified.",
+            },
+        )
+
+    google_sub = str(claims["sub"])
+    email = str(claims["email"]).lower()
+
+    user = db.query(models.User).filter(models.User.google_sub == google_sub).first()
+    linked_now = False
+    if user is None:
+        user = db.query(models.User).filter(func.lower(models.User.email) == email).first()
+        if user is not None:
+            if user.google_sub and user.google_sub != google_sub:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "GOOGLE_ACCOUNT_MISMATCH",
+                        "message": "This email is already linked to a different Google account.",
+                    },
+                )
+            linked_now = True
+
+    if user is not None and user.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "ADMIN_GOOGLE_SIGNIN_DISABLED",
+                "message": "Admin accounts sign in with email and password.",
+            },
+        )
+
+    if user is not None:
+        if linked_now:
+            # A password account made with this email may have been created by
+            # someone who never owned the email (registration does not verify
+            # it). Google has now proven who owns it, so claim the account for
+            # them and retire any password that was set earlier.
+            user.google_sub = google_sub
+            user.password_hash = hash_password(secrets.token_urlsafe(32))
+            db.commit()
+            logger.info("auth.google_linked user_id=%s", user.id)
+        token = create_access_token(str(user.id), user.role)
+        return schemas.TokenResponse(access_token=token, role=user.role)
+
+    # No account yet.
+    if payload.role is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ROLE_REQUIRED",
+                "message": "No account exists for this Google email yet. "
+                "Choose a role to create one.",
+            },
+        )
+    _require_role_open_for_signup(payload.role)
+    user = models.User(
+        email=email,
+        # Random and never shown: this account signs in with Google only.
+        password_hash=hash_password(secrets.token_urlsafe(32)),
+        role=payload.role,
+        google_sub=google_sub,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "EMAIL_TAKEN", "message": "An account with this email already exists."},
+        )
+    db.refresh(user)
+    token = create_access_token(str(user.id), user.role)
+    return schemas.TokenResponse(access_token=token, role=user.role, new_account=True)
+
+
 # ---------- jobs (FR-JOB-01 .. FR-JOB-05) ----------
 
 
@@ -279,6 +397,9 @@ def _job_to_response(job: models.Job) -> schemas.JobResponse:
         job_type=job.job_type,
         location=schemas.Location(lat=job.location_lat, lng=job.location_lng),
         created_at=job.created_at,
+        walk_in=bool(job.walk_in),
+        customer_name=job.customer_name,
+        customer_phone=job.customer_phone,
     )
 
 
@@ -301,6 +422,40 @@ def create_job(
     # Fire-and-forget (see app/events.py) - a dropped event means quotation
     # service won't auto-react to this job, not that the job wasn't created.
     # The job row (just committed) is the authoritative record either way.
+    events.job_created(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        location={"lat": job.location_lat, "lng": job.location_lng},
+        created_at=job.created_at,
+    )
+    return _job_to_response(job)
+
+
+@app.post("/v1/jobs/walk-in", response_model=schemas.JobResponse, status_code=201)
+def create_walk_in_job(
+    payload: schemas.WalkInJobCreateRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+):
+    """A contractor opens a job for a customer standing in front of them who
+    has no account. The job gets a fresh customer_id that belongs to no user,
+    so no one can ever sign in as this customer and the job never shows up in
+    any real customer's list; quotation and payments-data let the contractor
+    approve the quote and record the cash for walk-in jobs ONLY."""
+    job = models.Job(
+        customer_id=models.new_uuid(),
+        contractor_id=claims["sub"],
+        location_lat=payload.location.lat,
+        location_lng=payload.location.lng,
+        job_type=payload.job_type,
+        status="lead",
+        walk_in=True,
+        customer_name=payload.customer_name,
+        customer_phone=payload.customer_phone,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
     events.job_created(
         job_id=job.id,
         customer_id=job.customer_id,

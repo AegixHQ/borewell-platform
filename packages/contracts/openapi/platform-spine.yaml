@@ -36,6 +36,45 @@ paths:
           description: Validation error (including a role that cannot be self-registered, e.g. admin, or a password over 72 bytes)
         '429':
           description: Too many registration attempts from this client; see Retry-After
+  /v1/auth/google:
+    post:
+      summary: |
+        Sign in or sign up with a Google ID token. The server verifies the
+        token (signature, audience = our client IDs in GOOGLE_CLIENT_IDS,
+        issuer, expiry, verified email). Existing account: signs in (role
+        ignored). No account: creates one with the given role, or answers 409
+        ROLE_REQUIRED. Contractor sign-up honours
+        ALLOW_PUBLIC_CONTRACTOR_REGISTRATION. Admin accounts cannot use this
+        route. First Google sign-in to an existing password account links it
+        and retires the old password. Rate limited like login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_token]
+              properties:
+                id_token: { type: string, description: "Google ID token (JWT) from the app's Google sign-in" }
+                role: { type: string, enum: [customer, contractor, resource_owner], description: "Only used when creating a new account" }
+      responses:
+        '200':
+          description: Signed in (new_account is true when this call created the account)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  role: { type: string }
+                  new_account: { type: boolean }
+        '401': { description: Google token failed verification (INVALID_GOOGLE_TOKEN) }
+        '403': { description: "Admin account (ADMIN_GOOGLE_SIGNIN_DISABLED) or contractor sign-up closed (CONTRACTOR_REGISTRATION_CLOSED)" }
+        '409': { description: "No account yet and no role given (ROLE_REQUIRED), email linked to another Google account (GOOGLE_ACCOUNT_MISMATCH), or email taken (EMAIL_TAKEN)" }
+        '422': { description: Validation error }
+        '429': { description: Rate limited }
+        '502': { description: Could not reach Google to fetch signing keys (GOOGLE_UNAVAILABLE) }
+        '503': { description: Google sign-in is not configured on this server (GOOGLE_NOT_CONFIGURED) }
   /v1/auth/login:
     post:
       summary: Authenticate and receive a JWT
@@ -62,6 +101,42 @@ paths:
           description: Invalid credentials
         '429':
           description: Too many login attempts from this client; see Retry-After
+  /v1/jobs/walk-in:
+    post:
+      summary: |
+        Open a job for a walk-in customer - someone who came to the contractor
+        in person and has no account. Contractor or admin only. The job gets a
+        fresh customer_id that belongs to no user (nobody can sign in as it),
+        walk_in=true, and the name and phone given here. Emits job.created
+        like any other job.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_name, customer_phone, location, job_type]
+              properties:
+                customer_name: { type: string, minLength: 1, maxLength: 100 }
+                customer_phone: { type: string, description: "10-digit Indian mobile, optional +91 prefix (stored as 10 digits)" }
+                location:
+                  type: object
+                  properties:
+                    lat: { type: number }
+                    lng: { type: number }
+                job_type: { type: string, enum: [residential, agricultural, commercial] }
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Only a contractor or admin may open a walk-in job
+        '422':
+          description: Validation error (blank name, bad phone, bad location or job_type)
   /v1/jobs:
     post:
       summary: Create a new job (lead). Customer role only.
@@ -247,3 +322,6 @@ components:
             lat: { type: number }
             lng: { type: number }
         created_at: { type: string, format: date-time }
+        walk_in: { type: boolean, description: "True for a job a contractor opened for a customer without an account" }
+        customer_name: { type: string, nullable: true, description: "Walk-in jobs only" }
+        customer_phone: { type: string, nullable: true, description: "Walk-in jobs only" }

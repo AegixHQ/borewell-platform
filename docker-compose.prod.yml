@@ -5,10 +5,12 @@
 # promoted, hardened version of that same idea - not a rewrite, not
 # Kubernetes. See docs/deployment/PRODUCTION.md for the full deploy runbook.
 #
-# Usage:
-#   cp .env.prod.example .env.prod
-#   # edit .env.prod - every CHANGE_ME value must be replaced, see that
-#   # file's own comments for how to generate each one
+# Usage (the short way - see docs/deployment/GO-LIVE.md):
+#   make prod-init     # creates .env.prod, generates the internal secrets
+#   # fill in the ">>> YOU ENTER <<<" section of .env.prod
+#   make prod-deploy   # preflight, build, start with HTTPS, smoke test
+#
+# The long way (plain HTTP, no preflight):
 #   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 #
 # Differences from docker-compose.yml (dev), and why each one exists:
@@ -58,10 +60,19 @@
 #     new frontend repo against this one for the first time. Nothing
 #     about adding the gateway removes or changes the direct-port path.
 
+# Container logs are kept on the VM's disk; without a cap a busy day can fill
+# it. 3 x 10 MB per container is plenty for `docker compose logs`.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres-platform-spine:
     image: docker.io/library/postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: platform_spine
       POSTGRES_USER: borewell
@@ -77,6 +88,7 @@ services:
   postgres-quotation:
     image: docker.io/library/postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: quotation
       POSTGRES_USER: borewell
@@ -92,6 +104,7 @@ services:
   postgres-resource-network:
     image: docker.io/library/postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: resource_network
       POSTGRES_USER: borewell
@@ -107,6 +120,7 @@ services:
   postgres-payments-data:
     image: docker.io/library/postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: payments_data
       POSTGRES_USER: borewell
@@ -122,6 +136,7 @@ services:
   redis:
     image: docker.io/library/redis:7-alpine
     restart: unless-stopped
+    logging: *logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -136,6 +151,7 @@ services:
     # than a second config file that could drift from it.
     image: docker.io/library/traefik:v3.1
     restart: unless-stopped
+    logging: *logging
     command:
       - "--providers.docker=true"
       # Only route services that opt in via traefik.enable=true (each
@@ -175,6 +191,7 @@ services:
   platform-spine:
     build: ./services/platform-spine
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres-platform-spine:
         condition: service_healthy
@@ -185,7 +202,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRY_MINUTES: "60"
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env.prod}}
       # The interactive docs publish the whole API surface; keep them off in production.
       ENABLE_API_DOCS: "0"
       QUOTATION_SERVICE_URL: http://quotation:8000
@@ -204,6 +221,8 @@ services:
       #   platform-spine python -m app.bootstrap create-user --role contractor --email <email>
       # (or set this to 1 just long enough for them to register, then back to 0).
       ALLOW_PUBLIC_CONTRACTOR_REGISTRATION: ${ALLOW_PUBLIC_CONTRACTOR_REGISTRATION:-0}
+      # Empty = Google sign-in off (POST /v1/auth/google answers 503).
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
     ports:
       - "${SERVICE_BIND_ADDR:-0.0.0.0}:8001:8000"
     healthcheck:
@@ -229,6 +248,7 @@ services:
   quotation:
     build: ./services/quotation
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres-quotation:
         condition: service_healthy
@@ -238,7 +258,7 @@ services:
       DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-quotation:5432/quotation
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env.prod}}
       # The interactive docs publish the whole API surface; keep them off in production.
       ENABLE_API_DOCS: "0"
       RESOURCE_NETWORK_URL: http://resource-network:8000
@@ -259,6 +279,7 @@ services:
   resource-network:
     build: ./services/resource-network
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres-resource-network:
         condition: service_healthy
@@ -268,7 +289,7 @@ services:
       DATABASE_URL: postgresql://borewell:${POSTGRES_PASSWORD}@postgres-resource-network:5432/resource_network
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env.prod}}
       # The interactive docs publish the whole API surface; keep them off in production.
       ENABLE_API_DOCS: "0"
     ports:
@@ -287,6 +308,7 @@ services:
   payments-data:
     build: ./services/payments-data
     restart: unless-stopped
+    logging: *logging
     depends_on:
       postgres-payments-data:
         condition: service_healthy
@@ -297,12 +319,14 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       QUOTATION_SERVICE_URL: http://quotation:8000
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env.prod}}
       # The interactive docs publish the whole API surface; keep them off in production.
       ENABLE_API_DOCS: "0"
-      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
-      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
-      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+      # All three blank = cash-only: create-order answers 502 and the app
+      # offers cash instead. `make prod-check` insists on all-or-none.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
     ports:
       - "${SERVICE_BIND_ADDR:-0.0.0.0}:8004:8000"
     healthcheck:
@@ -322,7 +346,7 @@ services:
       # 80/443) rather than the direct :8004 port - the direct port
       # still works too, but the gateway path is the one that survives
       # this VM's port layout changing later.
-      - "traefik.http.routers.payments-data.rule=PathPrefix(`/v1/payments`)"
+      - "traefik.http.routers.payments-data.rule=PathPrefix(`/v1/payments`) || PathPrefix(`/v1/analytics`)"
       - "traefik.http.services.payments-data.loadbalancer.server.port=8000"
 
   prometheus:
@@ -334,6 +358,7 @@ services:
     # tool), not just hand-written and assumed correct.
     image: docker.io/prom/prometheus:v2.55.1
     restart: unless-stopped
+    logging: *logging
     volumes:
       - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -363,10 +388,11 @@ services:
     # asking you to configure a datasource by hand.
     image: docker.io/grafana/grafana:11.2.0
     restart: unless-stopped
+    logging: *logging
     environment:
       # CHANGE_ME here too, same discipline as every other secret in
       # this file - Grafana's own login, not reused from anything else.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env.prod}
       # Anonymous viewing off by default - this dashboard shows request
       # volume and error rates, not customer data directly, but there's
       # no reason to leave it unauthenticated by default; flip this in
@@ -377,7 +403,8 @@ services:
       - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
     ports:
-      - "3000:3000"
+      # Loopback by default: the dashboard is for you, not the internet.
+      - "${GRAFANA_BIND_ADDR:-127.0.0.1}:3000:3000"
     depends_on:
       - prometheus
 

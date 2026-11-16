@@ -19,7 +19,7 @@ import { useNav } from "../../lib/nav";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
 import {
-  Alert, Amount, Badge, Body, Card, EmptyState, Eyebrow, Icon, JobTypeIcon,
+  Alert, Amount, Badge, Body, Button, Card, EmptyState, Eyebrow, Icon, JobTypeIcon,
   Loading, Pills, Row, Screen, Tile,
 } from "../../components/ui";
 
@@ -72,6 +72,8 @@ export default function ContractorBoard() {
 
       {!!jobs.error && <Alert>{jobs.error.message}</Alert>}
 
+      <Button title="New walk-in job" variant="saffron" trailing onPress={() => navigate("contractor.walkin")} />
+
       <Card dark>
         <Row>
           <Eyebrow dark>Awaiting customer approval</Eyebrow>
@@ -105,7 +107,7 @@ export default function ContractorBoard() {
         <Card>
           <EmptyState title="Nothing here yet">
             {phase === "all"
-              ? "When a customer submits a request it lands here as a new lead."
+              ? "When a customer submits a request it lands here as a new lead - or open a walk-in job for someone with you."
               : "No jobs in this phase right now."}
           </EmptyState>
         </Card>
@@ -143,9 +145,11 @@ function JobCard({ job, quote, onPress }) {
       <Row gap={12} align="flex-start">
         <Tile><JobTypeIcon jobType={job.job_type} /></Tile>
         <View style={{ flex: 1, gap: 2 }}>
-          <Body size={16} weight="700">{area ? area.name : jobTypeLabel(job.job_type, true)}</Body>
+          <Body size={16} weight="700">
+            {job.walk_in && job.customer_name ? job.customer_name : area ? area.name : jobTypeLabel(job.job_type, true)}
+          </Body>
           <Body size={12} muted style={{ fontVariant: ["tabular-nums"] }}>
-            {shortId(job.job_id)} · {jobTypeLabel(job.job_type, true)}
+            {shortId(job.job_id)} · {jobTypeLabel(job.job_type, true)}{job.walk_in && area ? ` · ${area.name}` : ""}
           </Body>
         </View>
         <View style={{ alignItems: "flex-end", gap: 6 }}>
@@ -155,6 +159,7 @@ function JobCard({ job, quote, onPress }) {
       </Row>
       <Row>
         <Badge tone={stageTone(job.status)}>{STAGE_LABELS[job.status]}</Badge>
+        {job.walk_in && <Badge>Walk-in</Badge>}
         <View style={{ flex: 1 }} />
         <Icon name="chevronRight" size={16} color={colors.muted} />
       </Row>

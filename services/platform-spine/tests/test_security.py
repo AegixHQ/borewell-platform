@@ -263,3 +263,13 @@ def test_create_user_cli_refuses_mismatched_passwords(client, monkeypatch):
     monkeypatch.setattr(bootstrap, "_with_session", lambda fn: called.append(1))
     assert bootstrap.main(["create-user", "--role", "admin", "--email", "x@example.com"]) == 1
     assert called == []
+
+
+def test_ensure_user_rejects_an_email_login_would_refuse(client):
+    """.local is reserved: login's EmailStr rejects it, so such an account
+    could never sign in. Fail at creation, not silently later."""
+    from app.bootstrap import ensure_user
+
+    with client.test_session_local() as db:
+        with pytest.raises(ValueError, match="email"):
+            ensure_user(db, "admin@borewell.local", "a-long-password-123", "admin")

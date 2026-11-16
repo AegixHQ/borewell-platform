@@ -4,12 +4,12 @@
  * apps/web-app/src/pages/contractor/ContractorJob.jsx.
  */
 import { useState } from "react";
-import { View } from "react-native";
+import { Linking, View } from "react-native";
 import {
   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL, RESOURCE_NETWORK_URL,
-  editQuotation, generateQuotation, getJob, getJobCompletionResult,
+  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
   getLatestQuotationForJob, listBookings, listPayments, logJobCompletion,
-  updateJobStatus,
+  recordWalkInCash, rejectCashPayment, rejectQuotation, updateJobStatus,
 } from "../../services/platform";
 import {
   BOOKING_STATUS_LABELS, JOB_STAGES, STAGE_LABELS, bookingTone, colors,
@@ -45,7 +45,7 @@ export default function ContractorJob({ params }) {
     { pollMs: 20000 }
   );
   const bookings = useLoad(() => listBookings(RESOURCE_NETWORK_URL, session.token), [jobId], { pollMs: 30000 });
-  const payments = useLoad(() => listPayments(PAYMENTS_URL, session.token), [jobId], { pollMs: 30000 });
+  const payments = useLoad(() => listPayments(PAYMENTS_URL, session.token), [jobId], { pollMs: 15000 });
   const completion = useLoad(
     () => getJobCompletionResult(PLATFORM_SPINE_URL, session.token, jobId).catch((err) => {
       if (err.status === 404) return null;
@@ -66,6 +66,45 @@ export default function ContractorJob({ params }) {
       setSheet(null);
       setToast(`Moved to ${STAGE_LABELS[next]}`);
       await job.reload();
+    });
+  }
+
+  async function handleCash(confirmed) {
+    await action.run(async () => {
+      const call = confirmed ? confirmCashPayment : rejectCashPayment;
+      await call(PAYMENTS_URL, session.token, payment.payment_id);
+      setSheet(null);
+      setToast(confirmed ? "Cash payment confirmed" : "Cash payment marked as not received");
+      await Promise.all([payments.reload(), job.reload()]);
+    });
+  }
+
+  // Walk-in only: the customer has no app, so once they have agreed (or not)
+  // to the price in person, the contractor records that for them.
+  async function handleDecide(approved) {
+    await action.run(async () => {
+      const call = approved ? approveQuotation : rejectQuotation;
+      await call(QUOTATION_URL, session.token, q.quotation_id);
+      setSheet(null);
+      setToast(approved ? "Quotation approved for the customer" : "Quotation closed - the customer declined");
+      await quote.reload();
+    });
+  }
+
+  // Walk-in only: the payment is created already completed. The key is stable
+  // per quotation, so a double-tap or a retry after a dropped connection
+  // returns the same payment instead of recording the cash twice.
+  async function handleWalkInCash() {
+    await action.run(async () => {
+      await recordWalkInCash(PAYMENTS_URL, session.token, {
+        jobId,
+        quotationId: q.quotation_id,
+        amount: q.total_estimate,
+        idempotencyKey: `walkin-cash-${q.quotation_id}`,
+      });
+      setSheet(null);
+      setToast("Cash recorded - job marked as paid");
+      await Promise.all([payments.reload(), job.reload()]);
     });
   }
 
@@ -102,17 +141,46 @@ export default function ContractorJob({ params }) {
 
   const next = nextStage(job.data.status);
   const atCompletion = job.data.status === "completion";
+  const walkIn = !!job.data.walk_in;
+  const awaitingDecision = !!q && (q.status === "draft" || q.status === "sent");
+  const canRecordCash = walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
 
   return (
     <Screen>
       <PageHeader
         eyebrow={`${shortId(jobId)} · ${jobTypeLabel(job.data.job_type, true)}${area ? ` · ${area.name}` : ""}`}
-        title={area ? `${area.name} site` : "Job"}
+        title={walkIn && job.data.customer_name ? job.data.customer_name : area ? `${area.name} site` : "Job"}
         subtitle={formatCoords(job.data.location.lat, job.data.location.lng)}
         right={<Badge tone={stageTone(job.data.status)}>{STAGE_LABELS[job.data.status]}</Badge>}
       />
 
       {!!action.error && <Alert>{action.error}</Alert>}
+
+      {walkIn && (
+        <Card>
+          <Row>
+            <Title size={20}>Walk-in customer</Title>
+            <View style={{ flex: 1 }} />
+            <Badge>No account</Badge>
+          </Row>
+          <Row gap={24} style={{ flexWrap: "wrap" }}>
+            <KeyValue k="Name" v={job.data.customer_name || "—"} />
+            <KeyValue k="Mobile" v={job.data.customer_phone || "—"} />
+          </Row>
+          {!!job.data.customer_phone && (
+            <Button
+              title="Call customer"
+              variant="light"
+              size="sm"
+              onPress={() => Linking.openURL(`tel:${job.data.customer_phone}`)}
+            />
+          )}
+          <Body size={13} muted>
+            This customer is not in the app, so you approve the quotation and record their cash payment
+            for them. Only do either with the customer in front of you.
+          </Body>
+        </Card>
+      )}
 
       <Card dark>
         <Row>
@@ -198,7 +266,25 @@ export default function ContractorJob({ params }) {
               <Amount size={24} color={colors.saffron}>{formatInr(q.total_estimate)}</Amount>
             </View>
 
-            <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
+            {walkIn && awaitingDecision && (
+              <>
+                <Alert tone="info">
+                  Show {job.data.customer_name || "the customer"} this price. Record their answer once they have
+                  told you - the quotation is then marked as decided by you on their behalf.
+                </Alert>
+                <Row gap={10}>
+                  <Button title="Customer declined" variant="light" size="sm" style={{ flex: 1 }} onPress={() => setSheet("quote-reject")} />
+                  <Button title="Customer agreed" variant="saffron" size="sm" style={{ flex: 1 }} onPress={() => setSheet("quote-approve")} />
+                </Row>
+              </>
+            )}
+            {walkIn && q.status === "approved" && q.decided_by && (
+              <Body size={12} muted>Approved by you on the customer&apos;s behalf.</Body>
+            )}
+
+            {(!walkIn || q.status !== "approved") && (
+              <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
+            )}
           </>
         )}
       </Card>
@@ -280,9 +366,30 @@ export default function ContractorJob({ params }) {
         </Row>
         <Body size={14} muted>
           {payment
-            ? `${formatInr(payment.amount)} · ${payment.status === "completed" ? "confirmed by the Razorpay webhook" : "waiting on the customer"}`
-            : "The customer pays after approving the quotation."}
+            ? `${formatInr(payment.amount)} · ${paymentNote(payment)}`
+            : walkIn
+              ? "Once the quotation is approved, take the cash from the customer and record it here."
+              : "The customer pays after approving the quotation."}
         </Body>
+        {canRecordCash && (
+          <>
+            <Alert tone="info">
+              Only record this once {formatInr(q.total_estimate)} is in your hand - it marks the job as paid and cannot be undone.
+            </Alert>
+            <Button title="Record cash received" variant="saffron" size="sm" onPress={() => setSheet("walkin-cash")} />
+          </>
+        )}
+        {payment?.method === "cash" && payment.status === "pending" && (
+          <>
+            <Alert tone="info">
+              The customer is paying {formatInr(payment.amount)} in cash. Only confirm once the money is in your hand - this marks the job as paid.
+            </Alert>
+            <Row gap={10}>
+              <Button title="Not received" variant="light" size="sm" style={{ flex: 1 }} onPress={() => setSheet("cash-reject")} />
+              <Button title="Cash received" variant="saffron" size="sm" style={{ flex: 1 }} onPress={() => setSheet("cash-confirm")} />
+            </Row>
+          </>
+        )}
       </Card>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -295,6 +402,51 @@ export default function ContractorJob({ params }) {
         </View>
       </Card>
 
+      <Confirm
+        visible={sheet === "quote-approve"}
+        title="Customer agreed to this price?"
+        body={q ? `You are approving ${formatInr(q.total_estimate)} for ${job.data.customer_name || "the customer"}, who has told you they agree. This cannot be undone.` : ""}
+        confirmLabel="Yes, they agreed"
+        busy={action.busy}
+        onConfirm={() => handleDecide(true)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "quote-reject"}
+        title="Customer declined this price?"
+        body="The quotation will be closed. You can send a revised version afterwards."
+        confirmLabel="Yes, declined"
+        busy={action.busy}
+        onConfirm={() => handleDecide(false)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "walkin-cash"}
+        title="Record cash received?"
+        body={q ? `You are confirming you were handed ${formatInr(q.total_estimate)} in cash by ${job.data.customer_name || "the customer"}. This marks the job as paid and cannot be undone.` : ""}
+        confirmLabel="Yes, received"
+        busy={action.busy}
+        onConfirm={handleWalkInCash}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "cash-confirm"}
+        title="Confirm cash received?"
+        body={payment ? `You are confirming you were handed ${formatInr(payment.amount)} in cash. This cannot be undone.` : ""}
+        confirmLabel="Yes, received"
+        busy={action.busy}
+        onConfirm={() => handleCash(true)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "cash-reject"}
+        title="Cash not received?"
+        body="The customer's cash payment will be closed and they can start a new payment, online or cash."
+        confirmLabel="Not received"
+        busy={action.busy}
+        onConfirm={() => handleCash(false)}
+        onClose={() => setSheet(null)}
+      />
       <Confirm
         visible={sheet === "advance"}
         title={next ? `Move to ${STAGE_LABELS[next]}?` : ""}
@@ -459,6 +611,13 @@ function paymentTone(status) {
 }
 
 const PAYMENT_LABELS = { completed: "Paid", pending: "Awaiting payment", failed: "Failed" };
+
+function paymentNote(payment) {
+  const cash = payment.method === "cash";
+  if (payment.status === "completed") return cash ? "cash, confirmed by you" : "paid online";
+  if (payment.status === "failed") return cash ? "cash not received" : "payment failed";
+  return cash ? "customer is paying cash - your confirmation needed" : "waiting on the customer";
+}
 
 function capitalise(text) {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
