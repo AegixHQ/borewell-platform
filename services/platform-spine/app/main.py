@@ -397,6 +397,9 @@ def _job_to_response(job: models.Job) -> schemas.JobResponse:
         job_type=job.job_type,
         location=schemas.Location(lat=job.location_lat, lng=job.location_lng),
         created_at=job.created_at,
+        walk_in=bool(job.walk_in),
+        customer_name=job.customer_name,
+        customer_phone=job.customer_phone,
     )
 
 
@@ -419,6 +422,40 @@ def create_job(
     # Fire-and-forget (see app/events.py) - a dropped event means quotation
     # service won't auto-react to this job, not that the job wasn't created.
     # The job row (just committed) is the authoritative record either way.
+    events.job_created(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        location={"lat": job.location_lat, "lng": job.location_lng},
+        created_at=job.created_at,
+    )
+    return _job_to_response(job)
+
+
+@app.post("/v1/jobs/walk-in", response_model=schemas.JobResponse, status_code=201)
+def create_walk_in_job(
+    payload: schemas.WalkInJobCreateRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+):
+    """A contractor opens a job for a customer standing in front of them who
+    has no account. The job gets a fresh customer_id that belongs to no user,
+    so no one can ever sign in as this customer and the job never shows up in
+    any real customer's list; quotation and payments-data let the contractor
+    approve the quote and record the cash for walk-in jobs ONLY."""
+    job = models.Job(
+        customer_id=models.new_uuid(),
+        contractor_id=claims["sub"],
+        location_lat=payload.location.lat,
+        location_lng=payload.location.lng,
+        job_type=payload.job_type,
+        status="lead",
+        walk_in=True,
+        customer_name=payload.customer_name,
+        customer_phone=payload.customer_phone,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
     events.job_created(
         job_id=job.id,
         customer_id=job.customer_id,

@@ -72,6 +72,17 @@ HS256 pinned; bcrypt; no raw SQL; CORS credentials off.
     cannot use Google sign-in. Google's keys are fetched from Google at
     runtime; if that fetch fails the endpoint answers 502 rather than trusting
     the token.
+12. **Walk-in jobs are the contractor's word.** For a customer with no account
+    the contractor approves the quotation and records the cash on their
+    behalf; there is no customer-side proof. What bounds it: the walk-in
+    endpoints work only on jobs the server marked `walk_in` at creation (it
+    can't be changed afterwards), the approving
+    contractor must be the one who quoted it, `decided_by` records who
+    decided, and a contractor still cannot approve, reject or mark paid any
+    *app* customer's quotation or job through them. A walk-in customer id
+    belongs to no user, so it can't be signed into or listed by anyone else.
+    Each walk-in job gets a new customer id, so one person visiting twice is
+    two customers; phone numbers are not de-duplicated.
 
 ## Operator checklist for the pilot
 

@@ -82,6 +82,7 @@ GitHub repo → Settings → Secrets and variables → Actions → **Variables**
 
 1. Register a customer in the app, post a job; as the contractor generate and approve a quotation.
 2. Pay online with Razorpay **test** card/UPI → the job moves to the payment stage. Pay another job in **cash** → contractor taps *Cash received*.
+   Also try a **walk-in**: as the contractor, Board → *New walk-in job*, quote it, *Customer agreed*, *Record cash received* (migrations `spine 0005` and `quotation 0004` apply automatically on deploy).
 3. Switch to `rzp_live_` keys in `.env.prod` + a live webhook in Razorpay, `make prod-deploy`, and make one small real payment.
 4. Run `make prod-backup` once and schedule it: `0 2 * * * cd /path/to/borewell-platform && ./infra/backup/backup.sh` (see [infra/backup/README.md](../../infra/backup/README.md); copy backups off the server too).
 

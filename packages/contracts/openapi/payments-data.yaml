@@ -158,6 +158,32 @@ paths:
         '502':
           description: Razorpay order-creation call failed
 
+  /v1/payments/walk-in-cash:
+    post:
+      summary: |
+        A contractor (or admin) records the cash received from a WALK-IN
+        customer (no account). Creates the payment already 'completed' (method
+        'cash') against the walk-in customer and fires payment.completed, which
+        moves the job on. Walk-in quotations only - for an app customer the
+        path stays choose-cash then confirm-cash. Amount must equal the
+        approved total exactly. Idempotent by idempotency_key.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, quotation_id, amount, idempotency_key]
+              properties:
+                job_id: { type: string, format: uuid }
+                quotation_id: { type: string, format: uuid }
+                amount: { type: string, format: decimal, example: "95450.00" }
+                idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '201': { description: Payment (completed; or the existing one when the key was already used by this contractor for the same request), content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+        '400': { description: "Quotation not approved (QUOTATION_NOT_APPROVED), amount mismatch (AMOUNT_MISMATCH) or job mismatch (JOB_QUOTATION_MISMATCH)" }
+        '403': { description: "Caller is not a contractor/admin, the quotation is not a walk-in (NOT_A_WALK_IN), or another contractor quoted it" }
+        '404': { description: Quotation not found }
+        '409': { description: "Already paid (ALREADY_PAID), a payment is open (PAYMENT_IN_PROGRESS), or the idempotency key was used for a different request (IDEMPOTENCY_KEY_CONFLICT)" }
   /v1/payments/{payment_id}/choose-cash:
     post:
       summary: |

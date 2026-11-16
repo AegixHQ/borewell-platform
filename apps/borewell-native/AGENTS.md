@@ -37,6 +37,7 @@ components/RazorpaySheet.js  Razorpay Checkout in a WebView (.web.js loads check
 components/DepthGauge.js the depth ruler, in Views rather than SVG
 components/StageViews.js the 14-stage rail and the 5 customer steps
 components/AppShell.js   top bar, page header, tab bar
+screens/contractor/WalkIn.js  "New walk-in job" for a customer with no account (see docs/BACKEND_INTEGRATION.md)
 screens/index.js         route table + the tabs each role gets
 screens/**               one file per screen, grouped by role
 ```
@@ -89,6 +90,11 @@ Reported honestly, per the root AGENTS.md:
   device. The map falls back to CARTO tiles when OpenStreetMap is blocked
   (seen in the headless browser); the OSM-with-headers path itself has not
   been seen on an Android device.
+- Walk-in customers, headless against `services/demo.js`: contractor opens a
+  walk-in job (form validation shown), generates the quote, taps *Customer
+  agreed*, then *Record cash received* (job shows Paid, "Walk-in" badge on the
+  Board); the customer account does not see the job. Not run against the real
+  services from the app (the backend behaviour is covered by each service's tests).
 - **Not** run on a physical device or a simulator, and not yet run against
   the real four services from a phone. The web preview exercises the same
   JavaScript, but layout on a real device, `expo-secure-store` and the

@@ -177,6 +177,9 @@ function seedJob({ status, jobType, lat, lng, ageDays, customerId = CUSTOMER.id 
     job_type: jobType,
     location: { lat, lng },
     created_at: iso(now - ageDays * DAY),
+    walk_in: false,
+    customer_name: null,
+    customer_phone: null,
   };
   jobs.push(job);
   return job;
@@ -208,6 +211,9 @@ function quoteFor(job, { version = 1, status = "draft" } = {}) {
     quotation_id: uuid(),
     job_id: job.job_id,
     customer_id: job.customer_id,
+    contractor_id: CONTRACTOR.id,
+    walk_in: !!job.walk_in,
+    decided_by: null,
     version,
     status,
     estimated_depth_range: {
@@ -360,6 +366,34 @@ async function handle(method, path, body, headers) {
       job_type: body.job_type,
       location: body.location,
       created_at: iso(Date.now()),
+      walk_in: false,
+      customer_name: null,
+      customer_phone: null,
+    };
+    jobs.unshift(job);
+    return ok(job, 201);
+  }
+  if (path === "/v1/jobs/walk-in" && method === "POST") {
+    if (me.role !== "contractor" && me.role !== "admin") {
+      return fail(403, "FORBIDDEN", "Only a contractor or admin may open a walk-in job.");
+    }
+    const name = String(body.customer_name || "").trim().replace(/\s+/g, " ");
+    const phone = String(body.customer_phone || "").replace(/\+91|[\s-]/g, "");
+    if (!name) return fail(422, "VALIDATION_ERROR", "customer_name must not be blank");
+    if (!/^\d{10}$/.test(phone)) {
+      return fail(422, "VALIDATION_ERROR", "customer_phone must be a valid 10-digit Indian mobile number");
+    }
+    // Like the real service: a fresh customer id that belongs to no account.
+    const job = {
+      job_id: uuid(),
+      customer_id: uuid(),
+      status: "lead",
+      job_type: body.job_type,
+      location: body.location,
+      created_at: iso(Date.now()),
+      walk_in: true,
+      customer_name: name,
+      customer_phone: phone,
     };
     jobs.unshift(job);
     return ok(job, 201);
@@ -446,6 +480,14 @@ async function handle(method, path, body, headers) {
   }
   if (seg[1] === "quotations" && (seg[3] === "approve" || seg[3] === "reject") && method === "POST") {
     const q = quotations.find((x) => x.quotation_id === seg[2]);
+    if (me.role === "customer") {
+      if (q.customer_id !== me.id) return fail(403, "FORBIDDEN", "You do not have access to this quotation.");
+    } else {
+      // Like the real service: a contractor decides only for a walk-in (a
+      // customer with no account) - never for someone who has the app.
+      if (!q.walk_in) return fail(403, "FORBIDDEN", "Only the customer can approve or reject this quotation.");
+      q.decided_by = me.id;
+    }
     q.status = seg[3] === "approve" ? "approved" : "rejected";
     return ok(q);
   }
@@ -572,6 +614,43 @@ async function handle(method, path, body, headers) {
       created_at: iso(Date.now()),
     };
     payments.push(payment);
+    return ok(payment, 201);
+  }
+  if (path === "/v1/payments/walk-in-cash" && method === "POST") {
+    if (me.role !== "contractor" && me.role !== "admin") {
+      return fail(403, "FORBIDDEN", "This action requires one of roles: contractor, admin.");
+    }
+    const q = quotations.find((x) => x.quotation_id === body.quotation_id);
+    if (!q) return fail(404, "QUOTATION_NOT_FOUND", "No quotation with this ID exists.");
+    if (q.job_id !== body.job_id) return fail(400, "JOB_QUOTATION_MISMATCH", "quotation_id does not belong to the given job_id.");
+    if (q.status !== "approved") return fail(400, "QUOTATION_NOT_APPROVED", "This quotation has not been approved yet.");
+    if (money(body.amount) !== q.total_estimate) {
+      return fail(400, "AMOUNT_MISMATCH", `Payment amount (${body.amount}) does not match the approved quotation total (${q.total_estimate}).`);
+    }
+    if (!q.walk_in) {
+      return fail(403, "NOT_A_WALK_IN", "Cash can be recorded this way only for a walk-in job.");
+    }
+    const live = payments.find((p) => p.quotation_id === q.quotation_id && p.status !== "failed");
+    if (live) {
+      return live.status === "completed" && live.cash_confirmed_by === me.id
+        ? ok(live, 201)
+        : fail(409, "ALREADY_PAID", "This quotation has already been paid.");
+    }
+    const payment = {
+      payment_id: uuid(),
+      job_id: q.job_id,
+      quotation_id: q.quotation_id,
+      amount: q.total_estimate,
+      status: "pending",
+      razorpay_order_id: null,
+      razorpay_payment_id: null,
+      method: "cash",
+      cash_confirmed_at: iso(Date.now()),
+      cash_confirmed_by: me.id,
+      created_at: iso(Date.now()),
+    };
+    payments.push(payment);
+    settleDemoPayment(payment, null);
     return ok(payment, 201);
   }
   if (seg[1] === "payments" && seg[3] === "create-order" && method === "POST") {

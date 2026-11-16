@@ -66,7 +66,8 @@ jobs:
           DEMO_ONLY: ${{ inputs.demo_only }}
           DOMAIN: ${{ inputs.api_domain || vars.API_DOMAIN }}
           LAN: ${{ inputs.lan_host }}
-          GOOGLE: ${{ inputs.google_web_client_id || vars.GOOGLE_WEB_CLIENT_ID }}
+          # Public identifier (not a secret); the repo variable or the dispatch input overrides it.
+          GOOGLE: ${{ inputs.google_web_client_id || vars.GOOGLE_WEB_CLIENT_ID || '603105294808-8cqk32vc3c1kkpk25u72bi9gq17hs8ir.apps.googleusercontent.com' }}
         run: |
           DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%/}"
           if [ "$EVENT" = push ] || [ "$DEMO_ONLY" = true ] || { [ -z "$DOMAIN" ] && [ -z "$LAN" ]; }; then

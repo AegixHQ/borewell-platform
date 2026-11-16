@@ -4,12 +4,12 @@
  * apps/web-app/src/pages/contractor/ContractorJob.jsx.
  */
 import { useState } from "react";
-import { View } from "react-native";
+import { Linking, View } from "react-native";
 import {
   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL, RESOURCE_NETWORK_URL,
-  confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
+  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
   getLatestQuotationForJob, listBookings, listPayments, logJobCompletion,
-  rejectCashPayment, updateJobStatus,
+  recordWalkInCash, rejectCashPayment, rejectQuotation, updateJobStatus,
 } from "../../services/platform";
 import {
   BOOKING_STATUS_LABELS, JOB_STAGES, STAGE_LABELS, bookingTone, colors,
@@ -79,6 +79,35 @@ export default function ContractorJob({ params }) {
     });
   }
 
+  // Walk-in only: the customer has no app, so once they have agreed (or not)
+  // to the price in person, the contractor records that for them.
+  async function handleDecide(approved) {
+    await action.run(async () => {
+      const call = approved ? approveQuotation : rejectQuotation;
+      await call(QUOTATION_URL, session.token, q.quotation_id);
+      setSheet(null);
+      setToast(approved ? "Quotation approved for the customer" : "Quotation closed - the customer declined");
+      await quote.reload();
+    });
+  }
+
+  // Walk-in only: the payment is created already completed. The key is stable
+  // per quotation, so a double-tap or a retry after a dropped connection
+  // returns the same payment instead of recording the cash twice.
+  async function handleWalkInCash() {
+    await action.run(async () => {
+      await recordWalkInCash(PAYMENTS_URL, session.token, {
+        jobId,
+        quotationId: q.quotation_id,
+        amount: q.total_estimate,
+        idempotencyKey: `walkin-cash-${q.quotation_id}`,
+      });
+      setSheet(null);
+      setToast("Cash recorded - job marked as paid");
+      await Promise.all([payments.reload(), job.reload()]);
+    });
+  }
+
   async function handleGenerate() {
     await action.run(
       async () => {
@@ -112,17 +141,46 @@ export default function ContractorJob({ params }) {
 
   const next = nextStage(job.data.status);
   const atCompletion = job.data.status === "completion";
+  const walkIn = !!job.data.walk_in;
+  const awaitingDecision = !!q && (q.status === "draft" || q.status === "sent");
+  const canRecordCash = walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
 
   return (
     <Screen>
       <PageHeader
         eyebrow={`${shortId(jobId)} · ${jobTypeLabel(job.data.job_type, true)}${area ? ` · ${area.name}` : ""}`}
-        title={area ? `${area.name} site` : "Job"}
+        title={walkIn && job.data.customer_name ? job.data.customer_name : area ? `${area.name} site` : "Job"}
         subtitle={formatCoords(job.data.location.lat, job.data.location.lng)}
         right={<Badge tone={stageTone(job.data.status)}>{STAGE_LABELS[job.data.status]}</Badge>}
       />
 
       {!!action.error && <Alert>{action.error}</Alert>}
+
+      {walkIn && (
+        <Card>
+          <Row>
+            <Title size={20}>Walk-in customer</Title>
+            <View style={{ flex: 1 }} />
+            <Badge>No account</Badge>
+          </Row>
+          <Row gap={24} style={{ flexWrap: "wrap" }}>
+            <KeyValue k="Name" v={job.data.customer_name || "—"} />
+            <KeyValue k="Mobile" v={job.data.customer_phone || "—"} />
+          </Row>
+          {!!job.data.customer_phone && (
+            <Button
+              title="Call customer"
+              variant="light"
+              size="sm"
+              onPress={() => Linking.openURL(`tel:${job.data.customer_phone}`)}
+            />
+          )}
+          <Body size={13} muted>
+            This customer is not in the app, so you approve the quotation and record their cash payment
+            for them. Only do either with the customer in front of you.
+          </Body>
+        </Card>
+      )}
 
       <Card dark>
         <Row>
@@ -208,7 +266,25 @@ export default function ContractorJob({ params }) {
               <Amount size={24} color={colors.saffron}>{formatInr(q.total_estimate)}</Amount>
             </View>
 
-            <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
+            {walkIn && awaitingDecision && (
+              <>
+                <Alert tone="info">
+                  Show {job.data.customer_name || "the customer"} this price. Record their answer once they have
+                  told you - the quotation is then marked as decided by you on their behalf.
+                </Alert>
+                <Row gap={10}>
+                  <Button title="Customer declined" variant="light" size="sm" style={{ flex: 1 }} onPress={() => setSheet("quote-reject")} />
+                  <Button title="Customer agreed" variant="saffron" size="sm" style={{ flex: 1 }} onPress={() => setSheet("quote-approve")} />
+                </Row>
+              </>
+            )}
+            {walkIn && q.status === "approved" && q.decided_by && (
+              <Body size={12} muted>Approved by you on the customer&apos;s behalf.</Body>
+            )}
+
+            {(!walkIn || q.status !== "approved") && (
+              <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
+            )}
           </>
         )}
       </Card>
@@ -291,8 +367,18 @@ export default function ContractorJob({ params }) {
         <Body size={14} muted>
           {payment
             ? `${formatInr(payment.amount)} · ${paymentNote(payment)}`
-            : "The customer pays after approving the quotation."}
+            : walkIn
+              ? "Once the quotation is approved, take the cash from the customer and record it here."
+              : "The customer pays after approving the quotation."}
         </Body>
+        {canRecordCash && (
+          <>
+            <Alert tone="info">
+              Only record this once {formatInr(q.total_estimate)} is in your hand - it marks the job as paid and cannot be undone.
+            </Alert>
+            <Button title="Record cash received" variant="saffron" size="sm" onPress={() => setSheet("walkin-cash")} />
+          </>
+        )}
         {payment?.method === "cash" && payment.status === "pending" && (
           <>
             <Alert tone="info">
@@ -316,6 +402,33 @@ export default function ContractorJob({ params }) {
         </View>
       </Card>
 
+      <Confirm
+        visible={sheet === "quote-approve"}
+        title="Customer agreed to this price?"
+        body={q ? `You are approving ${formatInr(q.total_estimate)} for ${job.data.customer_name || "the customer"}, who has told you they agree. This cannot be undone.` : ""}
+        confirmLabel="Yes, they agreed"
+        busy={action.busy}
+        onConfirm={() => handleDecide(true)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "quote-reject"}
+        title="Customer declined this price?"
+        body="The quotation will be closed. You can send a revised version afterwards."
+        confirmLabel="Yes, declined"
+        busy={action.busy}
+        onConfirm={() => handleDecide(false)}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
+        visible={sheet === "walkin-cash"}
+        title="Record cash received?"
+        body={q ? `You are confirming you were handed ${formatInr(q.total_estimate)} in cash by ${job.data.customer_name || "the customer"}. This marks the job as paid and cannot be undone.` : ""}
+        confirmLabel="Yes, received"
+        busy={action.busy}
+        onConfirm={handleWalkInCash}
+        onClose={() => setSheet(null)}
+      />
       <Confirm
         visible={sheet === "cash-confirm"}
         title="Confirm cash received?"

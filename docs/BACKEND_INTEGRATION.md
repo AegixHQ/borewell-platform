@@ -251,6 +251,26 @@ cannot be chosen once an online order exists for it. Completing it publishes
 the same `payment.completed` event, so the job advances exactly as for an
 online payment.
 
+**Walk-in customers (no account).** A customer who comes to the contractor in
+person has no account, so the contractor stands in for them on that one job:
+
+1. `POST /v1/jobs/walk-in` (platform-spine, contractor/admin) with
+   `customer_name`, `customer_phone` (10-digit mobile), `location`, `job_type`.
+   The job gets `walk_in: true` and a **fresh `customer_id` that belongs to no
+   user** - nobody can sign in as it and no app customer ever sees the job.
+   Emits `job.created` like any other job.
+2. The contractor generates the quotation as usual. The quotation records
+   `walk_in` (copied from the job) and the customer/contractor ids.
+3. `POST /v1/quotations/{id}/approve` or `/reject` is allowed for the quoting
+   contractor (or an admin) **only when `walk_in` is true**; `decided_by`
+   records who decided. For every app customer's quotation it is still `403`.
+4. `POST /v1/payments/walk-in-cash` (payments-data, contractor/admin) with the
+   usual `job_id`, `quotation_id`, `amount` (exactly the approved total) and
+   `idempotency_key` creates the payment already `completed` (`method: "cash"`)
+   and publishes `payment.completed`. Walk-in quotations only (`403
+   NOT_A_WALK_IN` otherwise), by the contractor who quoted it. Online (Razorpay)
+   payment is not offered for walk-ins - there is no app to run Checkout in.
+
 **Google sign-in.** `POST /v1/auth/google` takes the Google ID token (and a
 `role` only for a first-time account), verifies it against Google's keys and
 audience (`GOOGLE_CLIENT_IDS`), and returns the same token as `/login`.

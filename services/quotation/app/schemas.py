@@ -89,6 +89,15 @@ class QuotationResponse(BaseModel):
     # predate migration 0003.
     depth_overage_rate_per_ft: Optional[Decimal] = None
     created_at: datetime
+    # The job's customer (payments-data records a walk-in's cash against it).
+    customer_id: Optional[uuid.UUID] = None
+    # The contractor who quoted it (payments-data checks a walk-in's cash is
+    # recorded by that contractor).
+    contractor_id: Optional[uuid.UUID] = None
+    # True when the customer has no account and the contractor decides for them.
+    walk_in: bool = False
+    # Set when the approve/reject was made by someone other than the customer.
+    decided_by: Optional[uuid.UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
 

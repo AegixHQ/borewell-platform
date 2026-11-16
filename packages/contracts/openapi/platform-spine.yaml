@@ -101,6 +101,42 @@ paths:
           description: Invalid credentials
         '429':
           description: Too many login attempts from this client; see Retry-After
+  /v1/jobs/walk-in:
+    post:
+      summary: |
+        Open a job for a walk-in customer - someone who came to the contractor
+        in person and has no account. Contractor or admin only. The job gets a
+        fresh customer_id that belongs to no user (nobody can sign in as it),
+        walk_in=true, and the name and phone given here. Emits job.created
+        like any other job.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_name, customer_phone, location, job_type]
+              properties:
+                customer_name: { type: string, minLength: 1, maxLength: 100 }
+                customer_phone: { type: string, description: "10-digit Indian mobile, optional +91 prefix (stored as 10 digits)" }
+                location:
+                  type: object
+                  properties:
+                    lat: { type: number }
+                    lng: { type: number }
+                job_type: { type: string, enum: [residential, agricultural, commercial] }
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Only a contractor or admin may open a walk-in job
+        '422':
+          description: Validation error (blank name, bad phone, bad location or job_type)
   /v1/jobs:
     post:
       summary: Create a new job (lead). Customer role only.
@@ -286,3 +322,6 @@ components:
             lat: { type: number }
             lng: { type: number }
         created_at: { type: string, format: date-time }
+        walk_in: { type: boolean, description: "True for a job a contractor opened for a customer without an account" }
+        customer_name: { type: string, nullable: true, description: "Walk-in jobs only" }
+        customer_phone: { type: string, nullable: true, description: "Walk-in jobs only" }

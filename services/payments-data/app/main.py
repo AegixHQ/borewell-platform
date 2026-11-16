@@ -223,25 +223,13 @@ def _lock_quotation_for_payment(db: Session, quotation_id: str) -> None:
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": quotation_id})
 
 
-@app.post("/v1/payments", response_model=schemas.PaymentResponse, status_code=201)
-def create_payment(
-    payload: schemas.PaymentCreateRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("customer")),
-    quotation_fetcher=Depends(get_quotation_fetcher),
-):
-    # FR-PAY-03: same idempotency_key never creates two payment records.
-    # Checked BEFORE any cross-service call or insert - a replayed request
-    # should short-circuit to the existing result, not repeat the work.
-    existing = (
-        db.query(models.Payment)
-        .filter(models.Payment.idempotency_key == payload.idempotency_key)
-        .first()
-    )
-    if existing:
-        return _idempotent_replay(existing, claims, payload)
-
+def _checked_quotation(
+    request: Request, payload: schemas.PaymentCreateRequest, quotation_fetcher
+) -> dict:
+    """Fetch the quotation with the CALLER's token and run the checks every way
+    of opening a payment shares: it exists and the caller may see it, it
+    belongs to the stated job, it is approved, and the amount is exactly its
+    total. Returns the quotation."""
     auth_header = request.headers.get("Authorization", "")
     try:
         quotation = quotation_fetcher(str(payload.quotation_id), auth_header)
@@ -304,6 +292,29 @@ def create_payment(
                 ),
             },
         )
+    return quotation
+
+
+@app.post("/v1/payments", response_model=schemas.PaymentResponse, status_code=201)
+def create_payment(
+    payload: schemas.PaymentCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer")),
+    quotation_fetcher=Depends(get_quotation_fetcher),
+):
+    # FR-PAY-03: same idempotency_key never creates two payment records.
+    # Checked BEFORE any cross-service call or insert - a replayed request
+    # should short-circuit to the existing result, not repeat the work.
+    existing = (
+        db.query(models.Payment)
+        .filter(models.Payment.idempotency_key == payload.idempotency_key)
+        .first()
+    )
+    if existing:
+        return _idempotent_replay(existing, claims, payload)
+
+    _checked_quotation(request, payload, quotation_fetcher)
 
     # One live payment per quotation. A fresh idempotency key must not open a
     # second charge for something already paid, or while a checkout is open.
@@ -355,6 +366,129 @@ def create_payment(
         )
         return _idempotent_replay(existing, claims, payload)
     db.refresh(payment)
+    return _payment_to_response(payment)
+
+
+def _walk_in_replay(
+    existing: models.Payment, claims: dict, payload: schemas.PaymentCreateRequest
+) -> schemas.PaymentResponse:
+    """Same idea as _idempotent_replay: a replayed key answers only the
+    contractor who recorded it, for the same request."""
+    same_request = (
+        existing.method == "cash"
+        and existing.cash_confirmed_by == claims["sub"]
+        and existing.job_id == str(payload.job_id)
+        and existing.quotation_id == str(payload.quotation_id)
+        and existing.amount == payload.amount
+    )
+    if not same_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "This idempotency key was already used for a different request.",
+            },
+        )
+    return _payment_to_response(existing)
+
+
+@app.post("/v1/payments/walk-in-cash", response_model=schemas.PaymentResponse, status_code=201)
+def record_walk_in_cash(
+    payload: schemas.PaymentCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("contractor", "admin")),
+    quotation_fetcher=Depends(get_quotation_fetcher),
+):
+    """A contractor records the cash received from a WALK-IN customer (one with
+    no account, so no app to choose cash or confirm anything in). Creates the
+    payment already completed and fires the same payment.completed event that
+    moves the job on. It exists for walk-in jobs only: for an app customer the
+    cash path stays choose-cash -> confirm-cash, so a contractor cannot mark an
+    app customer's job paid on their own. The amount must equal the approved
+    quotation total exactly, like every other payment."""
+    existing = (
+        db.query(models.Payment)
+        .filter(models.Payment.idempotency_key == payload.idempotency_key)
+        .first()
+    )
+    if existing:
+        return _walk_in_replay(existing, claims, payload)
+
+    quotation = _checked_quotation(request, payload, quotation_fetcher)
+
+    if not quotation.get("walk_in"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "NOT_A_WALK_IN",
+                "message": "Cash can be recorded this way only for a walk-in job. "
+                "An app customer chooses cash and the contractor confirms it.",
+            },
+        )
+    if claims["role"] == "contractor" and quotation.get("contractor_id") != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "Only the contractor who quoted this job can record its payment.",
+            },
+        )
+    customer_id = quotation.get("customer_id")
+    if not customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "QUOTATION_SERVICE_UNAVAILABLE",
+                "message": "The quotation did not say which customer it is for.",
+            },
+        )
+
+    _lock_quotation_for_payment(db, str(payload.quotation_id))
+    open_payment = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.quotation_id == str(payload.quotation_id),
+            models.Payment.status.in_(("pending", "completed")),
+        )
+        .first()
+    )
+    if open_payment is not None:
+        db.rollback()  # releases the advisory lock
+        completed = open_payment.status == "completed"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ALREADY_PAID" if completed else "PAYMENT_IN_PROGRESS",
+                "message": "This quotation has already been paid."
+                if completed
+                else "A payment is already open for this quotation.",
+            },
+        )
+
+    payment = models.Payment(
+        job_id=str(payload.job_id),
+        quotation_id=str(payload.quotation_id),
+        customer_id=str(customer_id),
+        amount=payload.amount,
+        idempotency_key=payload.idempotency_key,
+        status="completed",
+        method="cash",
+        cash_confirmed_by=claims["sub"],
+        cash_confirmed_at=datetime.now(timezone.utc),
+    )
+    db.add(payment)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing = (
+            db.query(models.Payment)
+            .filter(models.Payment.idempotency_key == payload.idempotency_key)
+            .first()
+        )
+        return _walk_in_replay(existing, claims, payload)
+    _mark_completed(db, payment)
     return _payment_to_response(payment)
 
 

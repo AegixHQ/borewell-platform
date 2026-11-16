@@ -26,6 +26,7 @@ def good_env(**overrides):
         POSTGRES_PASSWORD="p" * 24, JWT_SECRET="j" * 48, GRAFANA_ADMIN_PASSWORD="g" * 16,
         PUBLIC_DOMAIN="api.borewell.in", LETSENCRYPT_EMAIL="ops@borewell.in",
         ALLOWED_ORIGINS="https://api.borewell.in",
+        GOOGLE_CLIENT_IDS="",  # the template ships the project Web client ID; tests start with it off
     )
     env.update(overrides)
     return env
@@ -250,3 +251,14 @@ def test_smoke_flags_unrouted_and_unconfigured(capsys):
 
 def test_smoke_fails_when_nothing_listens():
     assert smoke.run("http://127.0.0.1:9", https=False) == 1
+
+
+def test_template_ships_the_project_google_web_client_id():
+    """The Web client ID is a public identifier, pre-filled so sign-in works
+    out of the box; it must be format-valid and must not trip the
+    paste-an-example check."""
+    env = envfile.load(ROOT / ".env.prod.example")
+    assert env["GOOGLE_CLIENT_IDS"].startswith("603105294808-")
+    examples = preflight.example_values(TEMPLATE)
+    errs = preflight.check(good_env(GOOGLE_CLIENT_IDS=env["GOOGLE_CLIENT_IDS"]), examples=examples)[0]
+    assert errs == []

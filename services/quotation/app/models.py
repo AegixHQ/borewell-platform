@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy import false as sa_false
 
 from app.database import Base
 
@@ -123,6 +124,14 @@ class Quotation(Base):
     # column (migration 0003) - every quotation created after it always has
     # a value, since _get_rule() is required to generate a quote at all.
     depth_overage_rate_per_ft = Column(MONEY, nullable=True)
+
+    # Walk-in jobs (platform-spine jobs.walk_in): the customer has no account,
+    # so the contractor approves/rejects for them. Copied from the job at
+    # generation time and carried to every new version; it never changes.
+    walk_in = Column(Boolean, nullable=False, default=False, server_default=sa_false())
+    # Who made the approve/reject decision when it was NOT the customer
+    # themselves (the contractor/admin on a walk-in's behalf). Null otherwise.
+    decided_by = Column(String(36), nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
