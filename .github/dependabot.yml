@@ -5,15 +5,31 @@ updates:
   - package-ecosystem: pip
     directory: /services/platform-spine
     schedule: { interval: weekly }
+    # SQLAlchemy 2.1 makes postgresql:// mean psycopg v3 (we ship psycopg2); stay on 2.0.x until that is migrated.
+    ignore:
+      - dependency-name: sqlalchemy
+        versions: [\">=2.1\"]
   - package-ecosystem: pip
     directory: /services/quotation
     schedule: { interval: weekly }
+    # SQLAlchemy 2.1 makes postgresql:// mean psycopg v3 (we ship psycopg2); stay on 2.0.x until that is migrated.
+    ignore:
+      - dependency-name: sqlalchemy
+        versions: [\">=2.1\"]
   - package-ecosystem: pip
     directory: /services/resource-network
     schedule: { interval: weekly }
+    # SQLAlchemy 2.1 makes postgresql:// mean psycopg v3 (we ship psycopg2); stay on 2.0.x until that is migrated.
+    ignore:
+      - dependency-name: sqlalchemy
+        versions: [\">=2.1\"]
   - package-ecosystem: pip
     directory: /services/payments-data
     schedule: { interval: weekly }
+    # SQLAlchemy 2.1 makes postgresql:// mean psycopg v3 (we ship psycopg2); stay on 2.0.x until that is migrated.
+    ignore:
+      - dependency-name: sqlalchemy
+        versions: [\">=2.1\"]
   - package-ecosystem: docker
     directory: /services/platform-spine
     schedule: { interval: weekly }
