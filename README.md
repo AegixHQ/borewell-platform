@@ -116,6 +116,14 @@ pip install pre-commit && pre-commit install
 
 Single-VM deployment via `docker-compose.prod.yml` — a deliberate choice per `Architecture §10`: no managed orchestration until there's real multi-contractor load to justify it.
 
+**Env files at a glance** (every `*.example` has comments saying where each value comes from; real `.env` / `.env.prod` are gitignored):
+
+| File | For | You fill in |
+|---|---|---|
+| `.env.prod.example` → `.env.prod` | the live server (`make prod-init` creates it and generates the secrets) | domain, Razorpay keys, admin login (Google Web client ID is pre-filled) |
+| `apps/borewell-native/.env.example` → `.env` | the mobile app against a real backend (no file = demo mode) | your server URLs |
+| `services/*/.env.example` → `.env` | running one service by hand | usually nothing for local |
+
 **🚀 Go live:** [`docs/deployment/GO-LIVE.md`](docs/deployment/GO-LIVE.md) — `make prod-init` → fill in `.env.prod` → `make prod-check` → `make prod-deploy` (HTTPS, smoke test and all).
 
 **📘 Full runbook: [`docs/deployment/PRODUCTION.md`](docs/deployment/PRODUCTION.md)** — secrets setup, first deploy, verification, HTTPS, Razorpay dashboard setup, redeploys, rollback.
