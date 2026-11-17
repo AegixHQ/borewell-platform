@@ -5,7 +5,7 @@
   "dependencies": {
     "@expo/metro-runtime": "^57.0.16",
     "@react-native-google-signin/google-signin": "^17.0.0",
-    "expo": "~57.0.22",
+    "expo": "~57.0.33",
     "expo-secure-store": "^57.0.4",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",

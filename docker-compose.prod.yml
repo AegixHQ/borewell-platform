@@ -152,6 +152,8 @@ services:
     image: docker.io/library/traefik:v3.1
     restart: unless-stopped
     logging: *logging
+    security_opt:
+      - label=disable
     command:
       - "--providers.docker=true"
       # Only route services that opt in via traefik.enable=true (each
@@ -171,7 +173,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONTAINER_ENGINE_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
     depends_on:
       # condition: service_healthy, not just service_started - now that
       # each backend below has a real healthcheck (added alongside this),
@@ -360,7 +362,7 @@ services:
     restart: unless-stopped
     logging: *logging
     volumes:
-      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
       - prometheus_data:/prometheus
     depends_on:
       platform-spine:
@@ -400,8 +402,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro,Z
     ports:
       # Loopback by default: the dashboard is for you, not the internet.
       - "${GRAFANA_BIND_ADDR:-127.0.0.1}:3000:3000"

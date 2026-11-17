@@ -22,7 +22,7 @@ services:
   prometheus:
     image: docker.io/prom/prometheus:v2.55.1
     volumes:
-      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
       - prometheus_data:/prometheus
     depends_on:
       - platform-spine
@@ -42,8 +42,8 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards-json:ro,Z
     ports:
       - "3000:3000"
     depends_on:
