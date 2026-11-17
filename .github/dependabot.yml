@@ -62,6 +62,14 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Versions the Expo SDK pins together (react 0.88 / react 19.3 broke the
+      # bundle under SDK 57). Move them only with `npx expo install` on an SDK upgrade.
+      - dependency-name: "react"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor"]
     groups:
       native-minor-and-patch:
         update-types: [minor, patch]
