@@ -13,7 +13,7 @@ dependencies = [
     "redis>=5.0",
     "pyjwt>=2.8",
     "httpx>=0.27",
-    "prometheus-fastapi-instrumentator>=8.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
 ]
 
 [project.optional-dependencies]
