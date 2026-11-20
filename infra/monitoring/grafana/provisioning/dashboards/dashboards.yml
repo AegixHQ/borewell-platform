@@ -20,4 +20,4 @@ providers:
       # separate folder in this repo) onto this exact container path -
       # editing the JSON file there and restarting (or waiting 30s)
       # updates the dashboard without touching Grafana's UI or database.
-      path: /etc/grafana/provisioning/dashboards-json
+      path: /etc/grafana/dashboards-json
