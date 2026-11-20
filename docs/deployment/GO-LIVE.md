@@ -21,6 +21,22 @@ Move to a real domain later without losing data: set the new `PUBLIC_DOMAIN`, `m
 
 A free-trial VM is fine for the same reason: nothing in the repo is tied to one provider. Use 4 GB RAM if you can (it runs 4 databases, 4 services, Redis, the gateway and monitoring); give it a **static IP** so the hostname keeps working.
 
+## 0. A fresh Ubuntu server (skip if you already have Docker on one)
+
+Any Ubuntu 22.04/24.04 VM with 4 GB RAM, a **static public IP** and ports 22, 80
+and 443 open in the provider's firewall (not your home laptop - the router and
+ISP get in the way). On it:
+
+```bash
+git clone https://github.com/AegixHQ/borewell-platform && cd borewell-platform
+bash tools/go-live/bootstrap-vm.sh     # Docker, git, make, 2 GB swap; prints your IP
+```
+
+Log out and back in once, point your DuckDNS name at the printed IP, then continue
+below. (On Oracle Cloud's Ubuntu image also open 80/443 in the server's own
+iptables: `sudo iptables -I INPUT 5 -p tcp --dport 80 -j ACCEPT`, same for 443,
+then `sudo netfilter-persistent save`.)
+
 ## 1. Get the code and create `.env.prod`
 
 ```bash
