@@ -29,3 +29,9 @@ __pycache__/
 .venv-demo/
 .demo-data/
 .venv*/
+
+# Database backups (contain user emails, phones and password hashes) - never commit
+backups/
+*.sql
+*.sql.gz
+*.dump
