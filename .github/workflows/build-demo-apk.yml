@@ -100,6 +100,43 @@ jobs:
           fi
       - name: Generate the Android project
         run: npx expo prebuild --platform android --no-install
+
+      - name: Add Maven Central mirror for React Native Gradle plugin
+        working-directory: apps/borewell-native
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("node_modules/@react-native/gradle-plugin")
+          mirror = 'maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }'
+
+          changed = []
+
+          for path in root.rglob("*.gradle.kts"):
+              original = path.read_text()
+
+              if "mavenCentral()" not in original:
+                  continue
+
+              if "maven-central.storage-download.googleapis.com/maven2/" in original:
+                  continue
+
+              updated = original.replace(
+                  "mavenCentral()",
+                  f"{mirror}\n    mavenCentral()"
+              )
+
+              path.write_text(updated)
+              changed.append(path.relative_to(root))
+
+          print("Patched Gradle files:")
+          for path in changed:
+              print(f" - {path}")
+
+          if not changed:
+              raise SystemExit("No Gradle repositories were patched!")
+          PY
       - name: Allow plain-http to the LAN (live build only)
         if: env.LAN_HOST != ''
         run: sed -i 's/<application /<application android:usesCleartextTraffic="true" /' android/app/src/main/AndroidManifest.xml
@@ -113,7 +150,7 @@ jobs:
           # fail instantly with the same error.
           refresh=""
           for attempt in 1 2 3 4 5; do
-            ./gradlew assembleRelease --no-daemon $refresh -PreactNativeArchitectures=arm64-v8a && exit 0
+            ./gradlew assembleRelease --no-daemon --refresh-dependencies -PreactNativeArchitectures=arm64-v8a && exit 0
             echo "Attempt $attempt failed; retrying in 45s"; sleep 45
             refresh="--refresh-dependencies"
           done
