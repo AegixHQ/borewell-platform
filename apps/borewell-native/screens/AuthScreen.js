@@ -26,7 +26,7 @@ const ROLE_OPTIONS = [
 
 export default function AuthScreen() {
   const { signIn } = useSession();
-  const { busy, error, run } = useAction();
+  const { busy, error, fieldErrors, clearFieldError, run } = useAction();
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -101,15 +101,22 @@ export default function AuthScreen() {
           />
 
           {registering && (
-            <Field label="I am joining as">
-              <Pills value={role} onChange={setRole} options={ROLE_OPTIONS} />
+            <Field label="I am joining as" error={fieldErrors.role}>
+              <Pills
+                value={role}
+                onChange={(value) => {
+                  setRole(value);
+                  clearFieldError("role");
+                }}
+                options={ROLE_OPTIONS}
+              />
             </Field>
           )}
 
-          <Field label="Email">
+          <Field label="Email" error={fieldErrors.email}>
             <Input
               value={email}
-              onChangeText={setEmail}
+              onChangeText={(value) => { setEmail(value); clearFieldError("email"); }}
               placeholder="you@example.com"
               autoCapitalize="none"
               autoCorrect={false}
@@ -119,15 +126,20 @@ export default function AuthScreen() {
           </Field>
 
           {registering && (
-            <Field label="Phone" hint="Optional">
-              <Input value={phone} onChangeText={setPhone} placeholder="+91 " keyboardType="phone-pad" />
+            <Field label="Phone" hint="Optional" error={fieldErrors.phone}>
+              <Input
+                value={phone}
+                onChangeText={(value) => { setPhone(value); clearFieldError("phone"); }}
+                placeholder="+91 "
+                keyboardType="phone-pad"
+              />
             </Field>
           )}
 
-          <Field label="Password" hint={registering ? "At least 8 characters" : undefined}>
+          <Field label="Password" hint={registering ? "At least 8 characters" : undefined} error={fieldErrors.password}>
             <Input
               value={password}
-              onChangeText={setPassword}
+              onChangeText={(value) => { setPassword(value); clearFieldError("password"); }}
               placeholder="••••••••"
               secureTextEntry
               autoCapitalize="none"

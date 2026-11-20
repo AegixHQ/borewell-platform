@@ -15,18 +15,26 @@ import { useSession } from "./session";
 
 export function useLoad(loader, deps = [], { pollMs } = {}) {
   const [state, setState] = useState({ data: undefined, error: null, loading: true });
-  const mounted = useRef(true);
+  const mounted = useRef(false);
+  const requestVersion = useRef(0);
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
 
   const run = useCallback(async ({ quiet = false } = {}) => {
+    const version = ++requestVersion.current;
     if (!quiet) setState((s) => ({ ...s, loading: true }));
     try {
       const data = await loaderRef.current();
-      if (mounted.current) setState({ data, error: null, loading: false });
+      if (mounted.current && version === requestVersion.current) {
+        setState({ data, error: null, loading: false });
+      }
       return data;
     } catch (err) {
-      if (mounted.current) setState((s) => ({ data: s.data, error: err, loading: false }));
+      if (mounted.current && version === requestVersion.current) {
+        // Retain the last successful data. Screens can show it with the
+        // error message rather than replacing a populated view with a blank.
+        setState((s) => ({ data: s.data, error: err, loading: false }));
+      }
       return undefined;
     }
   }, []);
@@ -34,7 +42,12 @@ export function useLoad(loader, deps = [], { pollMs } = {}) {
   useEffect(() => {
     mounted.current = true;
     run();
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      // Ignore any request still in flight when dependencies change or the
+      // component unmounts; an older response must not overwrite newer data.
+      requestVersion.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
@@ -54,26 +67,41 @@ export function useLoad(loader, deps = [], { pollMs } = {}) {
     return () => { clearInterval(id); sub.remove(); };
   }, [pollMs, run]);
 
-  return { ...state, reload: run };
+  return {
+    ...state,
+    isStale: state.data !== undefined && state.error !== null,
+    reload: run,
+  };
 }
 
 /** Tracks a one-off action (save, approve, accept) with busy + error state. */
 export function useAction() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const clearFieldError = useCallback((field) => {
+    setFieldErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }, []);
   const run = useCallback(async (fn, { onError } = {}) => {
     setBusy(true);
     setError(null);
+    setFieldErrors({});
     try {
       return await fn();
     } catch (err) {
       setError(onError ? onError(err) : err.message);
+      setFieldErrors(err?.fieldErrors && typeof err.fieldErrors === "object" ? err.fieldErrors : {});
       return undefined;
     } finally {
       setBusy(false);
     }
   }, []);
-  return { busy, error, setError, run };
+  return { busy, error, fieldErrors, clearFieldError, setError, run };
 }
 
 /** Transient confirmation message ("Saved", "Request sent"). */

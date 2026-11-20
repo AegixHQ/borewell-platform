@@ -68,8 +68,17 @@ jobs:
           LAN: ${{ inputs.lan_host }}
           # Public identifier (not a secret); the repo variable or the dispatch input overrides it.
           GOOGLE: ${{ inputs.google_web_client_id || vars.GOOGLE_WEB_CLIENT_ID || '603105294808-8cqk32vc3c1kkpk25u72bi9gq17hs8ir.apps.googleusercontent.com' }}
+          # Public client-side tile API key; embedded in the APK by design.
+          GEOAPIFY: ${{ vars.GEOAPIFY_API_KEY }}
         run: |
           DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%/}"
+          if [ "$EVENT" != "push" ] && [ "$DEMO_ONLY" != "true" ] && { [ -n "$DOMAIN" ] || [ -n "$LAN" ]; }; then
+            if [ -z "$GEOAPIFY" ]; then
+              echo "::error::Set the GEOAPIFY_API_KEY repository variable before building a LIVE APK."
+              exit 1
+            fi
+            echo "EXPO_PUBLIC_GEOAPIFY_API_KEY=$GEOAPIFY" >> "$GITHUB_ENV"
+          fi
           if [ "$EVENT" = push ] || [ "$DEMO_ONLY" = true ] || { [ -z "$DOMAIN" ] && [ -z "$LAN" ]; }; then
             echo "KIND=demo" >> "$GITHUB_ENV"
             echo "EXPO_PUBLIC_DEMO=1" >> "$GITHUB_ENV"

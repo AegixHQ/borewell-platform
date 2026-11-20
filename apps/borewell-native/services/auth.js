@@ -15,6 +15,8 @@
  * removes the platform-uncertainty entirely rather than betting on it.
  */
 
+import { requestJson } from "./http";
+
 function base64UrlDecode(base64url) {
   const base64 = base64url.replace(/-/g, "+").replace(/_/g, "/");
   const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
@@ -45,45 +47,28 @@ export function decodeJwtPayload(token) {
 }
 
 export async function login(platformSpineUrl, email, password) {
-  const response = await fetch(`${platformSpineUrl}/v1/auth/login`, {
+  return requestJson(platformSpineUrl, "/v1/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: { email, password },
+    fallbackMessage: "Login failed. Please try again.",
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message || "Login failed");
-  }
-  return response.json(); // { access_token, role }
 }
 
 export async function registerAccount(platformSpineUrl, { email, password, phone, role }) {
-  const response = await fetch(`${platformSpineUrl}/v1/auth/register`, {
+  return requestJson(platformSpineUrl, "/v1/auth/register", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, phone: phone || undefined, role }),
+    body: { email, password, phone: phone || undefined, role },
+    fallbackMessage: "Registration failed. Please try again.",
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message || "Registration failed");
-  }
-  return response.json(); // { access_token, role }
 }
 
 // Google sign-in: sends the Google ID token to platform-spine, which verifies
 // it and returns our own session token. role is only used when this creates a
 // new account; without it a first-time Google user gets code ROLE_REQUIRED.
 export async function googleLogin(platformSpineUrl, idToken, role) {
-  const response = await fetch(`${platformSpineUrl}/v1/auth/google`, {
+  return requestJson(platformSpineUrl, "/v1/auth/google", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id_token: idToken, role: role || undefined }),
+    body: { id_token: idToken, role: role || undefined },
+    fallbackMessage: "Google sign-in failed. Please try again.",
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const err = new Error(body?.error?.message || "Google sign-in failed");
-    err.code = body?.error?.code;
-    throw err;
-  }
-  return response.json(); // { access_token, role, new_account }
 }
