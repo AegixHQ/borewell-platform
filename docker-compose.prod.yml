@@ -149,7 +149,10 @@ services:
     # entirely via Docker labels on each backend service below, which is
     # Traefik's Docker provider reading this same compose file rather
     # than a second config file that could drift from it.
-    image: docker.io/library/traefik:v3.1
+    # v3.6.1+ negotiates the Docker API version. Older Traefik (v3.1) always asks
+    # for API 1.24, which Docker Engine 29+ (what get.docker.com installs now)
+    # refuses, so no router is ever built and no certificate is issued.
+    image: docker.io/library/traefik:v3.6.2
     restart: unless-stopped
     logging: *logging
     security_opt:
