@@ -108,10 +108,14 @@ jobs:
       - name: Build the APK (arm64 phones)
         working-directory: apps/borewell-native/android
         run: |
-          # services.gradle.org occasionally answers 504; retry the whole build.
+          # services.gradle.org / Maven occasionally answer 504 or a bogus "not found".
+          # Gradle caches such misses, so retries must --refresh-dependencies or they
+          # fail instantly with the same error.
+          refresh=""
           for attempt in 1 2 3 4 5; do
-            ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a && exit 0
+            ./gradlew assembleRelease --no-daemon $refresh -PreactNativeArchitectures=arm64-v8a && exit 0
             echo "Attempt $attempt failed; retrying in 45s"; sleep 45
+            refresh="--refresh-dependencies"
           done
           exit 1
       - uses: actions/upload-artifact@v7
