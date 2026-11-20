@@ -1,6 +1,7 @@
 """Tests for the go-live tooling. Run: python3 -m pytest tools/go-live/tests"""
 # ruff: noqa: E501  (long, human-readable messages are the point of this file)
 import http.server
+import json
 import os
 import stat
 import sys
@@ -219,7 +220,15 @@ def make_server(google=401, webhook=400):
             self._send(404 if self.path in ("/metrics", "/docs", "/openapi.json") else 401)
 
         def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if self.path == "/v1/auth/google" and google != 503:
+                # like the real service: body validation (min 20 chars) runs when Google is ON
+                try:
+                    token = json.loads(body or b"{}").get("id_token", "")
+                except ValueError:
+                    token = ""
+                if len(token) < 20:
+                    return self._send(422)
             self._send({"/v1/auth/login": 401, "/v1/auth/google": google,
                         "/v1/payments/webhook": webhook}.get(self.path, 404))
 

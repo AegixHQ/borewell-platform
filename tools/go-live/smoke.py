@@ -89,7 +89,10 @@ def run(base, expect_razorpay=False, expect_google=False, https=True):
 
     # Google: 503 = switched off, 401 = on and verifying, 502 = on but cannot reach Google.
     try:
-        status, _, _ = call(base, "POST", "/v1/auth/google", {"id_token": "not-a-token"})
+        # The server validates the body (id_token >= 20 chars) once Google is ON, so the
+        # dummy must be long enough to reach the token check and get a 401, not a 422.
+        status, _, _ = call(base, "POST", "/v1/auth/google",
+                            {"id_token": "smoke-test-not-a-real-google-token"})
         if status == 401:
             res.ok("Google sign-in: ON (rejects a bad token)")
             if not expect_google:
