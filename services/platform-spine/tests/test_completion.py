@@ -274,3 +274,75 @@ def test_customer_role_cannot_log_completion(client):
             headers={"Authorization": f"Bearer {cust}"},
         )
     assert resp.status_code == 403
+
+
+# ---- completion is required before the job can move on to payment ----
+
+def _advance(client, job_id, token, new_status):
+    return client.patch(
+        f"/v1/jobs/{job_id}/status",
+        json={"status": new_status},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_cannot_advance_to_payment_without_completion_record(client):
+    cust = _register_and_login(client, "c11@example.com", "customer")
+    cont = _register_and_login(client, "k11@example.com", "contractor")
+    job_id = _create_job_at_completion(client, cust, cont)
+
+    resp = _advance(client, job_id, cont, "payment")
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "COMPLETION_REQUIRED"
+    job = client.get(f"/v1/jobs/{job_id}", headers={"Authorization": f"Bearer {cont}"})
+    assert job.json()["status"] == "completion"
+
+
+def test_can_advance_to_payment_and_service_history_after_completion_logged(client):
+    cust = _register_and_login(client, "c13@example.com", "customer")
+    cont = _register_and_login(client, "k13@example.com", "contractor")
+    job_id = _create_job_at_completion(client, cust, cont)
+
+    with patch(MOCK_PATCH, return_value=MOCK_QUOTATION):
+        r = client.post(
+            f"/v1/jobs/{job_id}/completion",
+            json={"actual_depth_ft": 220.0, "actual_cost": 75000.0},
+            headers={"Authorization": f"Bearer {cont}"},
+        )
+    assert r.status_code == 201
+
+    to_payment = _advance(client, job_id, cont, "payment")
+    assert to_payment.status_code == 200
+    assert to_payment.json()["status"] == "payment"
+
+    to_history = _advance(client, job_id, cont, "service_history")
+    assert to_history.status_code == 200
+    assert to_history.json()["status"] == "service_history"
+
+
+def test_racing_duplicate_completion_returns_409_and_stores_nothing(client):
+    """Two submissions can both pass the 'already exists' check; unique(job_id)
+    stops the second at commit and it must surface as 409, not a 500."""
+    from sqlalchemy.exc import IntegrityError
+
+    cust = _register_and_login(client, "c14@example.com", "customer")
+    cont = _register_and_login(client, "k14@example.com", "contractor")
+    job_id = _create_job_at_completion(client, cust, cont)
+
+    with patch(MOCK_PATCH, return_value=MOCK_QUOTATION), patch(
+        "sqlalchemy.orm.Session.commit",
+        side_effect=IntegrityError("INSERT", {}, Exception("unique violation")),
+    ):
+        resp = client.post(
+            f"/v1/jobs/{job_id}/completion",
+            json={"actual_depth_ft": 220.0, "actual_cost": 75000.0},
+            headers={"Authorization": f"Bearer {cont}"},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ALREADY_COMPLETED"
+    result = client.get(
+        f"/v1/jobs/{job_id}/completion/result", headers={"Authorization": f"Bearer {cont}"}
+    )
+    assert result.status_code == 404

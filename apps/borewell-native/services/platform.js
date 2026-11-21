@@ -23,6 +23,8 @@
  * versioned docs before writing code").
  */
 
+import { requestJson } from "./http";
+
 export const PLATFORM_SPINE_URL =
   process.env.EXPO_PUBLIC_PLATFORM_SPINE_URL || "http://localhost:8001";
 export const QUOTATION_URL =
@@ -103,23 +105,7 @@ assertReleaseConfig({
 // EXPO_PUBLIC_PLATFORM_SPINE_URL=http://192.168.1.50:8001 - not
 // something this file can detect or default correctly on its own.
 
-async function request(baseUrl, path, { method = "GET", token, body } = {}) {
-  const headers = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${baseUrl}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const err = new Error(data?.error?.message || `Request failed (${response.status})`);
-    err.code = data?.error?.code;
-    err.status = response.status;
-    throw err;
-  }
-  return data;
-}
+const request = requestJson;
 
 // --- platform-spine: jobs ---
 
@@ -167,6 +153,24 @@ export async function updateJobStatus(platformSpineUrl, token, jobId, newStatus)
     method: "PATCH",
     token,
     body: { status: newStatus },
+  });
+}
+
+// --- platform-spine: administration (admin only) ---
+
+export async function listUsers(platformSpineUrl, token, { role, limit } = {}) {
+  const params = new URLSearchParams();
+  if (role) params.set("role", role);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return request(platformSpineUrl, `/v1/admin/users${query ? `?${query}` : ""}`, { token });
+}
+
+export async function createContractor(platformSpineUrl, token, { email, password, phone }) {
+  return request(platformSpineUrl, "/v1/admin/contractors", {
+    method: "POST",
+    token,
+    body: { email, password, phone: phone || undefined },
   });
 }
 
@@ -313,6 +317,10 @@ export async function acceptBooking(resourceNetworkUrl, token, bookingId) {
     method: "POST",
     token,
   });
+}
+
+export async function releaseBooking(resourceNetworkUrl, token, bookingId) {
+  return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/release`, { method: "POST", token });
 }
 
 export async function rejectBooking(resourceNetworkUrl, token, bookingId) {

@@ -1,9 +1,11 @@
 """
-Real event CONSUMER - platform-spine subscribes to payment.completed and
-advances the matching job from "completion" to "payment" (RFC 0001
-section 8's state order; BR-03: "A job cannot enter payment-complete
-status without a completed payment record" - this IS that enforcement,
-not just a convenience).
+Real event CONSUMER - platform-spine subscribes to payment.completed,
+records a receipt for the job, and advances it from "completion" to
+"payment" once its completion record is also logged (RFC 0001 section 8's
+state order; BR-03: "A job cannot enter payment-complete status without a
+completed payment record" - this IS that enforcement, not just a
+convenience). The advance also runs when the completion record is logged,
+because the payment usually arrives first.
 
 This is the first real subscriber anywhere in this codebase. Every
 service's app/events.py (this one included) has only ever published,
@@ -34,9 +36,10 @@ import logging
 import os
 import threading
 
+from sqlalchemy.exc import IntegrityError
+
 from app.database import SessionLocal
-from app.job_state_machine import InvalidTransitionError, validate_transition
-from app.models import Job
+from app.models import Job, JobCompletion, PaymentReceipt
 
 logger = logging.getLogger(__name__)
 
@@ -77,35 +80,50 @@ def handle_payment_completed(payload: dict, db=None) -> None:
             logger.warning("payment.completed for unknown job_id=%s, dropping", job_id)
             return
 
-        if job.status != "completion":
-            # Not an error - could be a redelivered event (Redis pub/sub
-            # doesn't guarantee exactly-once any more than Razorpay's
-            # webhooks do) for a job already advanced past "payment", or
-            # an out-of-order delivery. Advancing is only valid from
-            # exactly "completion" per the state machine (RFC 0001
-            # section 8) - anything else is silently skipped, not forced.
+        # The customer normally pays long before the job reaches
+        # "completion", so this event usually can't be acted on yet. Record
+        # it first - Redis pub/sub never replays - and let
+        # advance_to_payment_if_ready() decide whether the job can move now
+        # or when its completion record is logged later. Redelivery is
+        # harmless: one receipt row per job.
+        if not db.query(PaymentReceipt.id).filter(PaymentReceipt.job_id == job.id).first():
+            db.add(PaymentReceipt(job_id=job.id))
+            try:
+                db.commit()
+            except IntegrityError:
+                # A concurrent redelivery inserted the same receipt first.
+                db.rollback()
+
+        if advance_to_payment_if_ready(db, job):
+            logger.info("job_id=%s advanced to 'payment' via payment.completed event", job_id)
+        else:
             logger.info(
-                "payment.completed for job_id=%s but status is '%s' (not 'completion'), skipping",
+                "payment.completed recorded for job_id=%s; job stays at '%s' until it is ready",
                 job_id,
                 job.status,
             )
-            return
-
-        try:
-            validate_transition(job.status, "payment")
-        except InvalidTransitionError:
-            logger.warning(
-                "payment.completed for job_id=%s: state machine rejected completion->payment",
-                job_id,
-            )
-            return
-
-        job.status = "payment"
-        db.commit()
-        logger.info("job_id=%s advanced to 'payment' via payment.completed event", job_id)
     finally:
         if owns_session:
             db.close()
+
+
+def advance_to_payment_if_ready(db, job) -> bool:
+    """Move a job from "completion" to "payment" iff both are on record:
+    its completion record (actual depth and cost) AND a payment.completed
+    receipt (BR-03). Called from both sides - when the payment event arrives
+    and when the completion record is logged - so whichever comes last does
+    the advance. Returns True if the job was advanced. Safe to call repeatedly:
+    anything other than exactly "completion" is left alone (RFC 0001 section 8).
+    """
+    if job.status != "completion":
+        return False
+    has_completion = db.query(JobCompletion.id).filter(JobCompletion.job_id == job.id).first()
+    has_receipt = db.query(PaymentReceipt.id).filter(PaymentReceipt.job_id == job.id).first()
+    if not (has_completion and has_receipt):
+        return False
+    job.status = "payment"
+    db.commit()
+    return True
 
 
 def _listen_loop():

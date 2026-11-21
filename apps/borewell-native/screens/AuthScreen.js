@@ -12,6 +12,9 @@ import { DEMO_MODE, PLATFORM_SPINE_URL } from "../services/platform";
 import { DEMO_ACCOUNTS } from "../services/demo";
 import { colors } from "../theme";
 import { useAction } from "../lib/hooks";
+import {
+  assertValid, chain, emailError, normaliseEmail, passwordError, phoneError, useFieldRefs,
+} from "../lib/form";
 import { useSession } from "../lib/session";
 import { GOOGLE_ENABLED, getGoogleIdToken } from "../lib/google";
 import DepthGauge from "../components/DepthGauge";
@@ -26,7 +29,7 @@ const ROLE_OPTIONS = [
 
 export default function AuthScreen() {
   const { signIn } = useSession();
-  const { busy, error, run } = useAction();
+  const { busy, error, fieldErrors, clearFieldError, run } = useAction();
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -35,13 +38,21 @@ export default function AuthScreen() {
   const [notice, setNotice] = useState(null);
 
   const registering = mode === "register";
+  const refs = useFieldRefs(3); // email, phone, password
+  const order = registering ? refs : [refs[0], refs[2]]; // sign-in has no phone field
 
   async function submit() {
     await run(async () => {
+      const cleanEmail = normaliseEmail(email);
+      assertValid({
+        email: emailError(email),
+        phone: registering ? phoneError(phone) : null,
+        password: registering ? passwordError(password) : password ? null : "Enter your password.",
+      });
       const { access_token: token } = registering
-        ? await registerAccount(PLATFORM_SPINE_URL, { email, password, phone, role })
-        : await login(PLATFORM_SPINE_URL, email, password);
-      await signIn({ token, email });
+        ? await registerAccount(PLATFORM_SPINE_URL, { email: cleanEmail, password, phone, role })
+        : await login(PLATFORM_SPINE_URL, cleanEmail, password);
+      await signIn({ token, email: cleanEmail });
     });
   }
 
@@ -101,37 +112,53 @@ export default function AuthScreen() {
           />
 
           {registering && (
-            <Field label="I am joining as">
-              <Pills value={role} onChange={setRole} options={ROLE_OPTIONS} />
+            <Field label="I am joining as" error={fieldErrors.role}>
+              <Pills
+                value={role}
+                onChange={(value) => {
+                  setRole(value);
+                  clearFieldError("role");
+                }}
+                options={ROLE_OPTIONS}
+              />
             </Field>
           )}
 
-          <Field label="Email">
+          <Field label="Email" error={fieldErrors.email}>
             <Input
               value={email}
-              onChangeText={setEmail}
+              onChangeText={(value) => { setEmail(value); clearFieldError("email"); }}
               placeholder="you@example.com"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
               textContentType="emailAddress"
+              autoComplete="email"
+              {...chain(order, 0, submit)}
             />
           </Field>
 
           {registering && (
-            <Field label="Phone" hint="Optional">
-              <Input value={phone} onChangeText={setPhone} placeholder="+91 " keyboardType="phone-pad" />
+            <Field label="Phone" hint="Optional" error={fieldErrors.phone}>
+              <Input
+                value={phone}
+                onChangeText={(value) => { setPhone(value); clearFieldError("phone"); }}
+                placeholder="+91 "
+                keyboardType="phone-pad"
+                {...chain(order, 1, submit)}
+              />
             </Field>
           )}
 
-          <Field label="Password" hint={registering ? "At least 8 characters" : undefined}>
+          <Field label="Password" hint={registering ? "At least 8 characters" : undefined} error={fieldErrors.password}>
             <Input
               value={password}
-              onChangeText={setPassword}
+              onChangeText={(value) => { setPassword(value); clearFieldError("password"); }}
               placeholder="••••••••"
               secureTextEntry
               autoCapitalize="none"
               textContentType={registering ? "newPassword" : "password"}
+              {...chain(order, order.length - 1, submit)}
             />
           </Field>
 

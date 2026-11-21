@@ -1,24 +1,22 @@
 /**
  * The map used for picking a job/rig location and for showing a site.
  *
- * The web app uses Leaflet. react-native-maps is the usual native answer,
- * but it is a native module that needs a Google Maps API key on Android and
- * a config-plugin build - it cannot run in Expo Go, and the registry was
- * unreachable when this was built (see components/ui.js). So this draws the
- * same OpenStreetMap raster tiles the web app uses, as plain <Image>s on a
- * Web-Mercator grid, with a PanResponder for dragging and two buttons for
- * zoom. No dependency, no native build, and the tile URLs are identical to
- * apps/web-app/src/components/SiteMap.jsx's.
+ * The web app uses Leaflet. This native map deliberately keeps a small
+ * dependency-free raster tile renderer: a Web-Mercator grid plus a
+ * PanResponder for dragging and buttons for zoom. That preserves the same
+ * map interactions without introducing another native mapping module.
  *
- * Tiles come from tile.openstreetmap.org first. Its usage policy requires an
- * identifying User-Agent / Referer and blocks requests without one - a
- * browser sends a Referer on its own (why the map worked on the laptop), but
- * a native <Image> sends neither, so Android showed "access blocked" tiles.
- * The headers below fix that. If OSM still refuses (rate limits, a network
- * that blocks it) the map falls back, for the rest of the session, to CARTO's
- * OSM-based basemap. For a real launch set EXPO_PUBLIC_TILE_URL to your own
- * tile server or a keyed provider (it is tried first); OSM's public servers
- * are for modest traffic only.
+ * Tile providers are configured in order. A custom licensed XYZ provider
+ * can be supplied with EXPO_PUBLIC_TILE_URL; otherwise the app uses
+ * Geoapify's OSM-Carto raster tiles when EXPO_PUBLIC_GEOAPIFY_API_KEY is
+ * configured. The public OSM Foundation standard tile server is not used
+ * as the app's production tile host because it is best-effort and can block
+ * app traffic. When all configured providers fail, the location picker
+ * remains usable with its pin and coordinate selection.
+ *
+ * Keep provider attribution visible and follow the provider's caching and
+ * usage requirements. Geoapify's Free plan requires Geoapify and OSM
+ * attribution; the app links both labels to their respective sites.
  *
  * Note for anyone extending this: POST /v1/resources/match does NOT return
  * lat/lng for the resources it ranks (only distance_km - see
@@ -26,29 +24,35 @@
  * be drawn as pins yet. That needs a backend change, not a frontend one.
  */
 import { useMemo, useState } from "react";
-import { Image, PanResponder, Pressable, Text, View } from "react-native";
+import { Image, Linking, PanResponder, Pressable, Text, View } from "react-native";
 import { PILOT_CENTER, colors } from "../theme";
 import { Icon } from "./ui";
 
 const TILE = 256;
-const APP_ID = "BorewellApp/1.0 (+https://github.com/AegixHQ/borewell-platform)";
 const fill = (tpl, z, x, y) => tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+const GEOAPIFY_API_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_API_KEY;
+const openAttribution = (url) => {
+  Linking.openURL(url).catch((error) => {
+    if (__DEV__) console.warn("Could not open map attribution link:", error);
+  });
+};
 
-// Tried in order; a tile that fails to load moves every map on to the next.
+// Production-friendly OSM-derived raster provider. Geoapify's osm-carto
+// style is a 256px PNG XYZ layer, so it works with this lightweight map
+// renderer without adding a native mapping dependency. The public OSMF tile
+// server is intentionally not used as an app tile host: it is best-effort,
+// has no SLA, and may block application traffic. A custom licensed XYZ
+// provider can still be configured ahead of Geoapify.
 const PROVIDERS = [
   process.env.EXPO_PUBLIC_TILE_URL && {
+    id: "custom",
     url: process.env.EXPO_PUBLIC_TILE_URL,
     credit: process.env.EXPO_PUBLIC_TILE_CREDIT || "© map contributors",
   },
-  {
-    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    headers: { "User-Agent": APP_ID, Referer: "https://github.com/AegixHQ/borewell-platform" },
-    credit: "© OpenStreetMap contributors",
-  },
-  {
-    url: "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-    headers: { "User-Agent": APP_ID },
-    credit: "© OpenStreetMap contributors © CARTO",
+  GEOAPIFY_API_KEY && {
+    id: "geoapify",
+    url: `https://maps.geoapify.com/v1/tile/osm-carto/{z}/{x}/{y}.png?apiKey=${encodeURIComponent(GEOAPIFY_API_KEY)}`,
+    credit: "Powered by Geoapify · © OpenStreetMap contributors",
   },
 ].filter(Boolean);
 
@@ -95,9 +99,13 @@ export default function SiteMap({
   const [width, setWidth] = useState(0);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const [providerIdx, setProviderIdx] = useState(preferred);
-  const provider = PROVIDERS[Math.min(providerIdx, PROVIDERS.length - 1)];
+  const provider = PROVIDERS[providerIdx] || null;
   const tileFailed = () => {
-    preferred = Math.min(Math.max(preferred, providerIdx + 1), PROVIDERS.length - 1);
+    if (providerIdx >= PROVIDERS.length) return;
+    // Move the whole map to the next configured provider. If none remains,
+    // keep the interactive coordinate picker and pin, but do not display a
+    // broken or policy-warning tile as though it were a map.
+    preferred = providerIdx + 1;
     setProviderIdx(preferred);
   };
 
@@ -153,15 +161,34 @@ export default function SiteMap({
 
   return (
     <View style={{ height, overflow: "hidden", backgroundColor: colors.sunk }} {...(interactive ? pan.panHandlers : {})}>
-      {tiles.map((t) => (
+      {provider && tiles.map((t) => (
         <Image
           key={t.key}
-          source={{ uri: fill(provider.url, t.z, t.x, t.y), headers: provider.headers }}
+          source={{ uri: fill(provider.url, t.z, t.x, t.y) }}
           onError={tileFailed}
           style={{ position: "absolute", left: t.left, top: t.top, width: TILE, height: TILE }}
           fadeDuration={120}
         />
       ))}
+
+      {!provider && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: 12,
+            left: 12,
+            right: 58,
+            padding: 10,
+            borderRadius: 12,
+            backgroundColor: colors.surface,
+          }}
+        >
+          <Text style={{ color: colors.ink2, fontSize: 12, lineHeight: 17 }}>
+            Map imagery is unavailable. You can still move the map and choose the location using the pin.
+          </Text>
+        </View>
+      )}
 
       {areas.map((area) => {
         const p = toScreen(area.center_lat, area.center_lng);
@@ -204,21 +231,33 @@ export default function SiteMap({
         </View>
       )}
 
-      <Text
-        style={{
-          position: "absolute",
-          left: 8,
-          bottom: 6,
-          fontSize: 10,
-          color: colors.ink2,
-          backgroundColor: "rgba(255,255,255,0.72)",
-          paddingHorizontal: 5,
-          borderRadius: 4,
-          overflow: "hidden",
-        }}
-      >
-        {provider.credit}
-      </Text>
+      {provider && (
+        <Text
+          style={{
+            position: "absolute",
+            left: 8,
+            bottom: 6,
+            fontSize: 10,
+            color: colors.ink2,
+            backgroundColor: "rgba(255,255,255,0.82)",
+            paddingHorizontal: 5,
+            borderRadius: 4,
+            overflow: "hidden",
+          }}
+        >
+          {provider.id === "geoapify" ? (
+            <>
+              <Text onPress={() => openAttribution("https://www.geoapify.com/")} style={{ textDecorationLine: "underline" }}>
+                Powered by Geoapify
+              </Text>
+              {" · "}
+              <Text onPress={() => openAttribution("https://www.openstreetmap.org/copyright")} style={{ textDecorationLine: "underline" }}>
+                © OpenStreetMap contributors
+              </Text>
+            </>
+          ) : provider.credit}
+        </Text>
+      )}
     </View>
   );
 }

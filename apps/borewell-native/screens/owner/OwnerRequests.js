@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { View } from "react-native";
 import {
-  RESOURCE_NETWORK_URL, acceptBooking, listBookings, listMyResources, rejectBooking,
+  RESOURCE_NETWORK_URL, acceptBooking, listBookings, listMyResources, rejectBooking, releaseBooking,
 } from "../../services/platform";
 import { BOOKING_STATUS_LABELS, bookingTone, formatInr, formatRelative } from "../../theme";
 import { useAction, useLoad, useToast } from "../../lib/hooks";
@@ -24,6 +24,7 @@ const FILTERS = [
   { value: "pending", label: "Pending" },
   { value: "accepted", label: "Accepted" },
   { value: "rejected", label: "Declined" },
+  { value: "completed", label: "Finished" },
   { value: "all", label: "All" },
 ];
 
@@ -60,6 +61,16 @@ export default function OwnerRequests() {
           : err.message),
       }
     );
+  }
+
+  // The job is done and the rig is back: free it for the next request.
+  async function release(booking) {
+    await action.run(async () => {
+      await releaseBooking(RESOURCE_NETWORK_URL, session.token, booking.booking_id);
+      setSelected(null);
+      setToast("Rig is available again");
+      await Promise.all([bookings.reload(), resources.reload({ quiet: true })]);
+    });
   }
 
   const chosen = selected ? all.find((b) => b.booking_id === selected) : null;
@@ -139,6 +150,13 @@ export default function OwnerRequests() {
                 onPress={() => respond(chosen, true)}
               />
             </Row>
+          ) : chosen?.status === "accepted" ? (
+            <Button
+              title={action.busy ? "Working…" : "Job finished - mark rig available"}
+              variant="saffron"
+              busy={action.busy}
+              onPress={() => release(chosen)}
+            />
           ) : null
         }
       >

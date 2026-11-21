@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
@@ -13,7 +14,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import job_consumer, models, schemas
 from app.database import get_db
 from app.deps import get_current_claims, require_role
 from app.geo import haversine_km
@@ -23,7 +24,16 @@ from app.logging_config import configure_logging
 configure_logging()
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Started here, not at import time, so importing app.main in tests never
+    # spins up a thread or a Redis connection. See app/job_consumer.py.
+    job_consumer.start()
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="resource-network",
     version="0.1.0",
     description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media",
@@ -278,6 +288,18 @@ def update_resource(
 
     if payload.status is not None:
         resource.status = payload.status
+        if payload.status == "available":
+            # Making a rig available again ends any accepted booking on it;
+            # otherwise that booking would go on blocking new requests.
+            for accepted in (
+                db.query(models.BookingRequest)
+                .filter(
+                    models.BookingRequest.resource_id == resource.id,
+                    models.BookingRequest.status == "accepted",
+                )
+                .all()
+            ):
+                accepted.status = "completed"
     if payload.name is not None:
         resource.name = payload.name
     if payload.notes is not None:
@@ -434,6 +456,17 @@ def list_bookings(
     return [_booking_to_response(b) for b in query.all()]
 
 
+def release_booking(db: Session, booking: models.BookingRequest) -> None:
+    """End an accepted booking and free its rig. Without this a rig stayed
+    'reserved' for ever and, worse, the accepted booking itself kept blocking
+    every new request for it (RESOURCE_ALREADY_REQUESTED) even after the owner
+    flipped the rig back to available by hand. Caller commits."""
+    booking.status = "completed"
+    resource = db.query(models.Resource).filter(models.Resource.id == booking.resource_id).first()
+    if resource is not None:
+        resource.status = "available"
+
+
 def _respond_to_booking(
     booking_id: uuid.UUID, new_status: str, db: Session, claims: dict
 ) -> models.BookingRequest:
@@ -511,6 +544,51 @@ def reject_booking(
     claims: dict = Depends(require_role("resource_owner")),
 ):
     booking = _respond_to_booking(booking_id, "rejected", db, claims)
+    return _booking_to_response(booking)
+
+
+@app.post("/v1/bookings/{booking_id}/release", response_model=schemas.BookingRequestResponse)
+def release_booking_endpoint(
+    booking_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("resource_owner", "contractor")),
+):
+    """The rig is done with: either side of an accepted booking (the contractor
+    who booked it, or the owner of the rig) can free it. This is the manual path;
+    completing the job (job.completed) frees it automatically - see
+    app/job_consumer.py. Repeating the call on a finished booking is harmless."""
+    booking = (
+        db.query(models.BookingRequest).filter(models.BookingRequest.id == str(booking_id)).first()
+    )
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "BOOKING_NOT_FOUND",
+                "message": "No booking request with this ID exists.",
+            },
+        )
+    party = booking.owner_id if claims["role"] == "resource_owner" else booking.contractor_id
+    if party != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "You can only release your own bookings."},
+        )
+    if booking.status == "completed":
+        return _booking_to_response(booking)
+    if booking.status != "accepted":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "BOOKING_NOT_ACTIVE",
+                "message": (
+                    f"Only an accepted booking can be released; this one is '{booking.status}'."
+                ),
+            },
+        )
+    release_booking(db, booking)
+    db.commit()
+    db.refresh(booking)
     return _booking_to_response(booking)
 
 

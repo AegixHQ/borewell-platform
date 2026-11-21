@@ -247,7 +247,7 @@ services:
       # PathPrefix, not StripPrefix - main.py's own routes already start
       # with /v1/, and platform-spine has no other prefix to strip (this
       # is genuinely the service's real path, not a gateway-only alias).
-      - "traefik.http.routers.platform-spine.rule=PathPrefix(`/v1/auth`) || PathPrefix(`/v1/jobs`)"
+      - "traefik.http.routers.platform-spine.rule=PathPrefix(`/v1/auth`) || PathPrefix(`/v1/jobs`) || PathPrefix(`/v1/admin`)"
       - "traefik.http.services.platform-spine.loadbalancer.server.port=8000"
 
   quotation:

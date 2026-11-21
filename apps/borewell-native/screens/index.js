@@ -16,6 +16,8 @@ import Bookings from "./contractor/Bookings";
 import Setup from "./contractor/Setup";
 import OwnerRequests from "./owner/OwnerRequests";
 import OwnerFleet from "./owner/OwnerFleet";
+import AdminOverview from "./admin/AdminOverview";
+import AdminPeople from "./admin/AdminPeople";
 
 export const SCREENS = {
   "customer.home": { component: CustomerHome, title: "Your borewells" },
@@ -31,6 +33,11 @@ export const SCREENS = {
 
   "owner.requests": { component: OwnerRequests, title: "Requests" },
   "owner.fleet": { component: OwnerFleet, title: "Fleet" },
+
+  "admin.overview": { component: AdminOverview, title: "Overview" },
+  "admin.people": { component: AdminPeople, title: "People" },
+  // The contractor's job screen, read-only for an admin (it checks the role).
+  "admin.job": { component: ContractorJob, title: "Job" },
 
   account: { component: Account, title: "Account" },
 };
@@ -55,12 +62,16 @@ const OWNER_TABS = [
   { route: "account", label: "You", icon: "user" },
 ];
 
+const ADMIN_TABS = [
+  { route: "admin.overview", label: "Overview", icon: "home" },
+  { route: "admin.people", label: "People", icon: "briefcase" },
+  { route: "account", label: "You", icon: "user" },
+];
+
 export const TABS_FOR_ROLE = {
   customer: CUSTOMER_TABS,
   contractor: CONTRACTOR_TABS,
-  // No dedicated admin workspace exists yet - admins see the contractor
-  // one, the same fallback the web app makes.
-  admin: CONTRACTOR_TABS,
+  admin: ADMIN_TABS,
   resource_owner: OWNER_TABS,
 };
 
@@ -73,4 +84,5 @@ export const TAB_FOR_ROUTE = {
   "customer.job": "customer.home",
   "contractor.job": "contractor.board",
   "contractor.walkin": "contractor.board",
+  "admin.job": "admin.overview",
 };

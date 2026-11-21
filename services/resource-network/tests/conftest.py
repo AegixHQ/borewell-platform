@@ -51,6 +51,7 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
+        c.test_session_local = testing_session_local
         yield c
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=engine)

@@ -91,3 +91,23 @@ class JobCompletion(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+
+class PaymentReceipt(Base):
+    """Remembers that payments-data announced payment.completed for a job.
+
+    Redis pub/sub is fire-and-forget and the customer normally pays long
+    before the job reaches "completion", so the event cannot be acted on when
+    it arrives. This row is what lets the job advance to "payment" later,
+    once its completion record exists (BR-03), without losing the event.
+    One row per job: redelivered events are no-ops.
+    """
+    __tablename__ = "payment_receipts"
+
+    id = Column(String(36), primary_key=True, default=new_uuid)
+    job_id = Column(String(36), nullable=False, unique=True, index=True)
+    received_at = Column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )

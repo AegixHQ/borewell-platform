@@ -33,7 +33,7 @@ paths:
         '403':
           description: CONTRACTOR_REGISTRATION_CLOSED - public sign-up for the contractor role is disabled (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0); an operator creates these accounts
         '422':
-          description: Validation error (including a role that cannot be self-registered, e.g. admin, or a password over 72 bytes)
+          description: Validation error (including a malformed email address, a role that cannot be self-registered, e.g. admin, or a password over 72 bytes). Emails are stored and compared lower-case.
         '429':
           description: Too many registration attempts from this client; see Retry-After
   /v1/auth/google:
@@ -184,6 +184,52 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Job'
+  /v1/admin/contractors:
+    post:
+      summary: |
+        Administrator adds a contractor account. Works even when public
+        contractor sign-up is closed (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0).
+        The password is chosen by the admin and handed over out of band; it is
+        never returned. Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128, description: "at most 72 bytes (bcrypt)" }
+                phone: { type: string, nullable: true, description: "10-digit Indian mobile, optional +91" }
+      responses:
+        '201':
+          description: Contractor created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserSummary' }
+        '401': { description: Missing or invalid token }
+        '403': { description: Caller is not an admin }
+        '409': { description: EMAIL_TAKEN - an account with this email already exists (case-insensitive) }
+        '422': { description: Malformed email, weak password, bad phone, or an unexpected field such as role }
+  /v1/admin/users:
+    get:
+      summary: Every account, newest first (admin only). Never includes password hashes.
+      parameters:
+        - { name: role, in: query, required: false, schema: { type: string, enum: [customer, contractor, admin, resource_owner] } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UserSummary' }
+        '403': { description: Caller is not an admin }
+        '422': { description: Unknown role filter }
   /v1/jobs/{job_id}:
     get:
       summary: Get a single job's current state
@@ -230,6 +276,11 @@ paths:
           description: Invalid transition (skips a state or moves backward)
         '403':
           description: Only contractor/admin may advance job status
+        '409':
+          description: |
+            COMPLETION_REQUIRED - a job at "completion" cannot move to "payment"
+            until its completion record (actual depth and cost) has been logged
+            via POST /v1/jobs/{job_id}/completion.
   /v1/jobs/{job_id}/completion:
     post:
       summary: |
@@ -238,6 +289,8 @@ paths:
         a second POST returns 409 ALREADY_COMPLETED (SRS section 5 entity).
         Fetches the approved quotation total from the quotation service to
         compute variance at write time (BR-04). Emits job.completed event.
+        If the job's payment.completed event was already received, the job is
+        advanced from "completion" to "payment" as part of this call.
       parameters:
         - name: job_id
           in: path
@@ -295,6 +348,14 @@ paths:
 
 components:
   schemas:
+    UserSummary:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        role: { type: string, enum: [customer, contractor, admin, resource_owner] }
+        created_at: { type: string, format: date-time, nullable: true }
     JobCompletionRecord:
       type: object
       description: |

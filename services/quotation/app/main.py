@@ -257,8 +257,12 @@ def _require_quotation_access(quotation: models.Quotation, claims: dict) -> None
     Customers may only touch quotations for jobs they own; contractor/admin
     keep the existing single-contractor MVP assumption of seeing
     everything. This is F-01's actual fix - previously nothing here
-    checked this at all."""
-    if claims["role"] == "customer" and quotation.customer_id != claims["sub"]:
+    checked this at all. A resource_owner has no business reading prices or
+    customer ids, so any role outside customer/contractor/admin is refused."""
+    role = claims["role"]
+    if role not in ("customer", "contractor", "admin") or (
+        role == "customer" and quotation.customer_id != claims["sub"]
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "You do not have access to this quotation."},
@@ -478,11 +482,20 @@ def edit_quotation(
             detail={"code": "FORBIDDEN", "message": "You can only edit your own quotations."},
         )
 
+    # Editing an old version would mint a second row with the same version
+    # number and leave two competing drafts for the customer.
+    _require_latest_version(db, existing)
+
     rule = _get_rule(db, existing.contractor_id, existing.job_type)
     minimum_job_charge = to_money(rule.minimum_job_charge) if rule else Decimal("0")
 
     if payload.line_items is not None:
-        new_line_items = [{"label": li.label, "amount": li.amount} for li in payload.line_items]
+        # float, not Decimal: the JSON column cannot serialise a Decimal (an
+        # unhandled 500 here is what the app reported as "service temporarily
+        # unavailable"). Same conversion generate_quotation uses.
+        new_line_items = [
+            {"label": li.label, "amount": float(li.amount)} for li in payload.line_items
+        ]
         new_subtotal = to_money(
             sum((Decimal(str(li.amount)) for li in payload.line_items), Decimal("0"))
         )

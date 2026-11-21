@@ -13,6 +13,7 @@ import {
 } from "../../services/platform";
 import { JOB_TYPES, PILOT_CENTER, colors, formatCoords } from "../../theme";
 import { useAction, useAreaName, useLoad } from "../../lib/hooks";
+import { chain, useFieldRefs } from "../../lib/form";
 import { useNav } from "../../lib/nav";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
@@ -41,6 +42,7 @@ export default function WalkIn() {
   const [pinned, setPinned] = useState(null);
   const [jobType, setJobType] = useState("agricultural");
   const [touched, setTouched] = useState(false);
+  const refs = useFieldRefs(2); // name, phone
 
   const areas = useLoad(() => listServiceAreas(RESOURCE_NETWORK_URL, session.token), [session.token]);
   const first = areas.data?.[0];
@@ -82,6 +84,7 @@ export default function WalkIn() {
             autoCapitalize="words"
             maxLength={100}
             testID="walkin-name"
+            {...chain(refs, 0, submit)}
           />
         </Field>
         <Field
@@ -96,6 +99,7 @@ export default function WalkIn() {
             keyboardType="phone-pad"
             maxLength={16}
             testID="walkin-phone"
+            {...chain(refs, 1, submit)}
           />
         </Field>
       </Card>

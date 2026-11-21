@@ -296,6 +296,31 @@ paths:
         '409':
           description: Already resolved, or resource no longer available
 
+  /v1/bookings/{booking_id}/release:
+    post:
+      summary: |
+        The rig is done with: the contractor who booked it, or its owner, ends an
+        accepted booking (status becomes 'completed') and the rig is 'available'
+        again. Completing the job (job.completed) does the same automatically;
+        this is the manual path. Repeating it on a finished booking is harmless.
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking completed, rig available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingRequest'
+        '403':
+          description: Not the contractor who booked it, nor the rig's owner
+        '404':
+          description: Booking not found
+        '409':
+          description: BOOKING_NOT_ACTIVE - only an accepted booking can be released
   /v1/bookings/{booking_id}/reject:
     post:
       summary: Owner rejects a pending request on their resource.
@@ -328,7 +353,7 @@ components:
         owner_id: { type: string, format: uuid }
         contractor_id: { type: string, format: uuid }
         job_id: { type: string, format: uuid, nullable: true }
-        status: { type: string, enum: [pending, accepted, rejected, cancelled] }
+        status: { type: string, enum: [pending, accepted, rejected, cancelled, completed] }
         message: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         responded_at: { type: string, format: date-time, nullable: true }

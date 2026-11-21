@@ -13,7 +13,10 @@ RESOURCE_TYPES = ("rig", "equipment", "labour")
 # resource itself doesn't track who requested it, the booking table does.
 RESOURCE_STATUSES = ("available", "reserved", "assigned", "in_use", "returned")
 
-BOOKING_STATUSES = ("pending", "accepted", "rejected", "cancelled")
+# "completed": the accepted booking is over and the rig is free again (see
+# release_booking in main.py). Postgres stores this column as plain VARCHAR
+# (migration 0002), so adding a value here needs no migration.
+BOOKING_STATUSES = ("pending", "accepted", "rejected", "cancelled", "completed")
 
 # Same MONEY convention as quotation/payments-data/platform-spine (Bug 2 fix).
 MONEY = Numeric(precision=12, scale=2)

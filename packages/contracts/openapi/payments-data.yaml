@@ -190,13 +190,16 @@ paths:
         The customer will pay the contractor in cash. The payment stays
         'pending' (method becomes 'cash') until a contractor confirms the
         cash arrived. Customer only, and only the payment's own customer.
+        Allowed after an online checkout was opened: the Razorpay order is kept,
+        and if money is captured on it anyway the payment completes as 'online'
+        (a second capture after cash was confirmed is logged for refund).
       parameters:
         - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
         '403': { description: Not the owning customer }
         '404': { description: Payment not found }
-        '409': { description: "Payment is not pending (PAYMENT_NOT_PENDING) or an online Razorpay order is already open (ONLINE_ORDER_OPEN)" }
+        '409': { description: "Payment is not pending (PAYMENT_NOT_PENDING)" }
   /v1/payments/{payment_id}/choose-online:
     post:
       summary: Change back from cash to online before a contractor has confirmed any cash. Customer only (own payment).

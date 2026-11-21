@@ -26,7 +26,7 @@ from app import (
     schemas,
 )
 from app.database import get_db
-from app.deps import get_current_claims, require_role
+from app.deps import require_role
 from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
 from app.job_state_machine import InvalidTransitionError, validate_transition
 from app.logging_config import configure_logging
@@ -207,6 +207,10 @@ def readyz(db: Session = Depends(get_db)):
 # ---------- auth (FR-AUTH-01 .. FR-AUTH-04) ----------
 
 
+def _user_by_email(db: Session, email: str) -> models.User | None:
+    return db.query(models.User).filter(func.lower(models.User.email) == email.lower()).first()
+
+
 def _require_role_open_for_signup(role: str) -> None:
     if role == "contractor" and os.getenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "1") == "0":
         raise HTTPException(
@@ -230,7 +234,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     # sign-up for that role must be closed: ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0.
     # New contractors are then created by an operator: python -m app.bootstrap create-user.
     _require_role_open_for_signup(payload.role)
-    existing = db.query(models.User).filter(models.User.email == payload.email).first()
+    existing = _user_by_email(db, payload.email)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -262,7 +266,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     dependencies=[Depends(login_rate_limit)],
 )
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    user = _user_by_email(db, payload.email)
     # Always spend one bcrypt check, even for an email with no account. Without
     # this an unknown email answered in ~1 ms and a known one in ~280 ms, which
     # tells an attacker exactly which emails are registered.
@@ -389,6 +393,80 @@ def google_sign_in(payload: schemas.GoogleLoginRequest, db: Session = Depends(ge
 # ---------- jobs (FR-JOB-01 .. FR-JOB-05) ----------
 
 
+def _user_to_summary(user: models.User) -> schemas.UserSummary:
+    return schemas.UserSummary(
+        user_id=user.id,
+        email=user.email,
+        phone=user.phone,
+        role=user.role,
+        created_at=user.created_at,
+    )
+
+
+@app.post(
+    "/v1/admin/contractors",
+    response_model=schemas.UserSummary,
+    status_code=201,
+)
+def admin_create_contractor(
+    payload: schemas.AdminCreateContractorRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("admin")),
+):
+    """An administrator adds a contractor. Works whether or not public
+    contractor sign-up is open (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION), which is
+    the point: once it is closed this is how new contractors get in. The
+    password is set by the admin and handed to the contractor out of band; it
+    is never returned."""
+    if _user_by_email(db, payload.email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "EMAIL_TAKEN", "message": "An account with this email already exists."},
+        )
+    user = models.User(
+        email=payload.email,
+        phone=payload.phone,
+        password_hash=hash_password(payload.password),
+        role="contractor",
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "EMAIL_TAKEN", "message": "An account with this email already exists."},
+        )
+    db.refresh(user)
+    logger.info("admin.contractor_created admin=%s user_id=%s", claims["sub"], user.id)
+    return _user_to_summary(user)
+
+
+@app.get("/v1/admin/users", response_model=list[schemas.UserSummary])
+def admin_list_users(
+    role: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("admin")),
+):
+    """Every account, newest first, optionally one role. Never includes
+    password hashes."""
+    if role is not None and role not in models.ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "VALIDATION_ERROR", "message": f"role must be one of {models.ROLES}"},
+        )
+    query = db.query(models.User)
+    if role is not None:
+        query = query.filter(models.User.role == role)
+    query = query.order_by(models.User.created_at.desc())
+    if limit is not None:
+        query = query.offset(offset).limit(limit)
+    return [_user_to_summary(u) for u in query.all()]
+
+
 def _job_to_response(job: models.Job) -> schemas.JobResponse:
     return schemas.JobResponse(
         job_id=job.id,
@@ -468,7 +546,7 @@ def create_walk_in_job(
 @app.get("/v1/jobs", response_model=list[schemas.JobResponse])
 def list_jobs(
     db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
     limit: int | None = Query(
         default=None,
         ge=1,
@@ -501,7 +579,7 @@ def list_jobs(
 def get_job(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
 ):
     job = db.query(models.Job).filter(models.Job.id == str(job_id)).first()
     if not job:
@@ -537,6 +615,25 @@ def advance_job_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "INVALID_TRANSITION", "message": str(exc)},
         )
+    # A job may not leave "completion" without its actual depth and cost on
+    # record - the quoted-vs-actual variance (BR-04) is the point of the stage.
+    if job.status == "completion" and payload.status == "payment":
+        has_completion = (
+            db.query(models.JobCompletion.id)
+            .filter(models.JobCompletion.job_id == str(job_id))
+            .first()
+        )
+        if not has_completion:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "COMPLETION_REQUIRED",
+                    "message": (
+                        "Record the actual depth and cost for this job before "
+                        "moving it to payment."
+                    ),
+                },
+            )
     job.status = payload.status
     db.commit()
     db.refresh(job)
@@ -692,7 +789,22 @@ def log_job_completion(
         completed_at=completed_at,
     )
     db.add(completion)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two submissions raced past the check above; unique(job_id) let
+        # exactly one through (BR-04).
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ALREADY_COMPLETED",
+                "message": (
+                    "A completion record already exists for this job "
+                    "and cannot be overwritten (BR-04)."
+                ),
+            },
+        )
     db.refresh(completion)
 
     # job.completed event - now we have the real data the schema requires.
@@ -702,6 +814,17 @@ def log_job_completion(
         actual_cost=actual_cost,
         completed_at=completed_at,
     )
+
+    # The customer usually paid long before this point. If that payment was
+    # already received, this is the moment the job becomes ready for "payment".
+    # The completion record above is already durable, so a failure here must
+    # not turn a saved completion into an error response.
+    try:
+        if payment_consumer.advance_to_payment_if_ready(db, job):
+            logger.info("job_id=%s advanced to 'payment' on completion logged", job_id)
+    except Exception:
+        db.rollback()
+        logger.exception("could not advance job_id=%s to 'payment' after completion", job_id)
 
     return _completion_to_response(completion)
 
@@ -713,7 +836,7 @@ def log_job_completion(
 def get_job_completion(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
 ):
     """Read completion record and variance (FR-TRACK-04). Customers can
     read their own job's record; contractor/admin can read any."""

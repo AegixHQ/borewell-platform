@@ -155,10 +155,11 @@ export const BOOKING_STATUS_LABELS = {
   accepted: "Accepted",
   rejected: "Declined",
   cancelled: "Cancelled",
+  completed: "Completed",
 };
 
 export function bookingTone(status) {
-  return { pending: "saffron", accepted: "green", rejected: "red", cancelled: "neutral" }[status] || "neutral";
+  return { pending: "saffron", accepted: "green", rejected: "red", cancelled: "neutral", completed: "neutral" }[status] || "neutral";
 }
 
 // --- formatting ----------------------------------------------------------

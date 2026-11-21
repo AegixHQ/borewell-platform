@@ -157,6 +157,7 @@ export default function CustomerJob({ params }) {
     await action.run(async () => {
       const current = await ensurePayment();
       await chooseCashPayment(PAYMENTS_URL, session.token, current.payment_id);
+      setConfirm(null);
       await payments.reload();
       setToast("Cash payment noted - hand it to your contractor");
     });
@@ -202,6 +203,80 @@ export default function CustomerJob({ params }) {
 
       {!!quote.error && <Alert>{quote.error.message}</Alert>}
       {!!action.error && <Alert>{action.error}</Alert>}
+
+      {/* The thing to act on sits straight under "Now", above the long quotation. */}
+      {approved && (
+        <Card>
+          <Row>
+            <Title size={20}>Payment</Title>
+            <View style={{ flex: 1 }} />
+            {payment ? <Badge tone={paymentTone(payment.status)}>{paymentLabel(payment.status)}</Badge> : <Badge>Not started</Badge>}
+          </Row>
+
+          {payment?.status === "completed" ? (
+            <Row gap={24}>
+              <KeyValue k="Paid" v={formatInr(payment.amount)} />
+              {!!payment.razorpay_payment_id && <KeyValue k="Reference" v={payment.razorpay_payment_id} />}
+            </Row>
+          ) : payment?.method === "cash" && payment.status === "pending" ? (
+            <>
+              <Amount>{formatInr(payment.amount)}</Amount>
+              <Alert tone="info">
+                You chose to pay in cash. Hand {formatInr(payment.amount)} to your contractor - the job moves on as soon as they confirm they have received it.
+              </Alert>
+              <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
+              <Button title="Pay online instead" variant="light" size="sm" busy={action.busy} onPress={handleSwitchToOnline} />
+            </>
+          ) : (
+            <>
+              <Amount>{formatInr(q.total_estimate)}</Amount>
+              {/* Always offered: choosing "Pay online" never locks cash out. */}
+              <Pills
+                value={method}
+                onChange={setMethod}
+                options={[{ value: "online", label: "Pay online" }, { value: "cash", label: "Pay cash" }]}
+              />
+              <Body size={14} muted>
+                {method === "cash"
+                  ? "Pay your contractor in cash. The payment counts only after your contractor confirms they received it."
+                  : "Pay with UPI, card or net banking. Your payment is confirmed by Razorpay, not by this screen."}
+              </Body>
+              {method === "cash" ? (
+                <Button
+                  title="Pay in cash"
+                  variant="saffron"
+                  size="lg"
+                  trailing
+                  busy={action.busy}
+                  onPress={() => (payment?.razorpay_order_id ? setConfirm("cash-switch") : handleChooseCash())}
+                />
+              ) : (
+                <Button
+                  title={action.busy ? "Opening…" : payment?.status === "pending" ? "Continue payment" : "Pay now"}
+                  variant="saffron"
+                  size="lg"
+                  trailing
+                  busy={action.busy}
+                  onPress={handlePay}
+                />
+              )}
+              {payment?.status === "pending" && !!payment.razorpay_order_id && (
+                <>
+                  <Alert tone="info">If you already paid, we are waiting for Razorpay to confirm it.</Alert>
+                  <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
+                </>
+              )}
+              {payment?.status === "failed" && (
+                <Alert>
+                  {payment.method === "cash"
+                    ? "Your contractor said they did not receive the cash. You can start a new payment."
+                    : "That attempt failed. You can try again."}
+                </Alert>
+              )}
+            </>
+          )}
+        </Card>
+      )}
 
       {!q && !quote.loading && (
         <Card>
@@ -288,73 +363,6 @@ export default function CustomerJob({ params }) {
         </Card>
       )}
 
-      {approved && (
-        <Card>
-          <Row>
-            <Title size={20}>Payment</Title>
-            <View style={{ flex: 1 }} />
-            {payment ? <Badge tone={paymentTone(payment.status)}>{paymentLabel(payment.status)}</Badge> : <Badge>Not started</Badge>}
-          </Row>
-
-          {payment?.status === "completed" ? (
-            <Row gap={24}>
-              <KeyValue k="Paid" v={formatInr(payment.amount)} />
-              {!!payment.razorpay_payment_id && <KeyValue k="Reference" v={payment.razorpay_payment_id} />}
-            </Row>
-          ) : payment?.method === "cash" && payment.status === "pending" ? (
-            <>
-              <Amount>{formatInr(payment.amount)}</Amount>
-              <Alert tone="info">
-                You chose to pay in cash. Hand {formatInr(payment.amount)} to your contractor - the job moves on as soon as they confirm they have received it.
-              </Alert>
-              <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
-              <Button title="Pay online instead" variant="light" size="sm" busy={action.busy} onPress={handleSwitchToOnline} />
-            </>
-          ) : (
-            <>
-              {!payment?.razorpay_order_id && (
-                <Pills
-                  value={method}
-                  onChange={setMethod}
-                  options={[{ value: "online", label: "Pay online" }, { value: "cash", label: "Pay cash" }]}
-                />
-              )}
-              <Body size={14} muted>
-                {method === "cash" && !payment?.razorpay_order_id
-                  ? "Pay your contractor in cash. The payment counts only after your contractor confirms they received it."
-                  : "Pay with UPI, card or net banking. Your payment is confirmed by Razorpay, not by this screen."}
-              </Body>
-              <Amount>{formatInr(q.total_estimate)}</Amount>
-              {method === "cash" && !payment?.razorpay_order_id ? (
-                <Button title="Pay in cash" variant="saffron" size="lg" trailing busy={action.busy} onPress={handleChooseCash} />
-              ) : (
-                <Button
-                  title={action.busy ? "Opening…" : payment?.status === "pending" ? "Continue payment" : "Pay now"}
-                  variant="saffron"
-                  size="lg"
-                  trailing
-                  busy={action.busy}
-                  onPress={handlePay}
-                />
-              )}
-              {payment?.status === "pending" && !!payment.razorpay_order_id && (
-                <>
-                  <Alert tone="info">If you already paid, we are waiting for Razorpay to confirm it.</Alert>
-                  <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
-                </>
-              )}
-              {payment?.status === "failed" && (
-                <Alert>
-                  {payment.method === "cash"
-                    ? "Your contractor said they did not receive the cash. You can start a new payment."
-                    : "That attempt failed. You can try again."}
-                </Alert>
-              )}
-            </>
-          )}
-        </Card>
-      )}
-
       {completion.data && (
         <Card>
           <Title size={20}>Final result</Title>
@@ -403,6 +411,16 @@ export default function CustomerJob({ params }) {
         confirmLabel="Send request"
         busy={action.busy}
         onConfirm={handleReject}
+        onClose={() => setConfirm(null)}
+      />
+      <Confirm
+        visible={confirm === "cash-switch"}
+        title="Pay in cash instead?"
+        body="You already opened an online payment for this quote. If you have paid online, do not pay cash as well. Otherwise your cash payment replaces it - your contractor must confirm they received it."
+        confirmLabel="Pay cash instead"
+        busy={action.busy}
+        error={action.error}
+        onConfirm={handleChooseCash}
         onClose={() => setConfirm(null)}
       />
       <RazorpaySheet order={checkout?.order} email={session.email} onResult={handleCheckoutResult} />
