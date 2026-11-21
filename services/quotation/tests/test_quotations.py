@@ -436,3 +436,65 @@ def test_generate_quotation_falls_back_to_flat_assumption_without_service_area_m
     assert body["estimated_depth_range"]["confidence"] == "low"
     assert body["estimated_depth_range"]["min_ft"] == 250
     assert body["estimated_depth_range"]["max_ft"] == 350
+
+
+def test_editing_line_items_creates_new_version(client):
+    # The mobile app always sends line_items. Amounts arrive as Decimal and the
+    # JSON column cannot store one, so this used to be an unhandled 500
+    # ("service temporarily unavailable" in the app).
+    token = _setup_rule(client, "contractor-edit-items")
+    create_resp = client.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    )
+    original = create_resp.json()
+    items = [
+        {"label": item["label"], "amount": float(item["amount"]) + 100}
+        for item in original["line_items"]
+    ]
+
+    edit_resp = client.patch(
+        f"/v1/quotations/{original['quotation_id']}",
+        json={"line_items": items, "total_estimate": 96000.5},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert edit_resp.status_code == 201, edit_resp.text
+    body = edit_resp.json()
+    assert body["version"] == 2
+    assert Decimal(body["total_estimate"]) == Decimal("96000.50")
+    assert [float(i["amount"]) for i in body["line_items"]] == [i["amount"] for i in items]
+
+
+def test_only_the_latest_version_can_be_edited(client_factory):
+    from tests.test_approval_integrity import _auth, _revise, _v1
+
+    c, contractor, _, v1 = _v1(client_factory, "edit-old")
+    _revise(c, contractor, v1["quotation_id"])
+
+    resp = c.patch(
+        f"/v1/quotations/{v1['quotation_id']}",
+        json={"total_estimate": 1000},
+        headers=_auth(contractor),
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "QUOTATION_SUPERSEDED"
+
+
+def test_resource_owner_cannot_read_quotations(client):
+    token = _setup_rule(client, "contractor-owner-read")
+    created = client.post(
+        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
+    ).json()
+    owner = make_token("a-rig-owner", "resource_owner")
+
+    by_id = client.get(
+        f"/v1/quotations/{created['quotation_id']}", headers={"Authorization": f"Bearer {owner}"}
+    )
+    by_job = client.get(
+        f"/v1/quotations/job/{created['job_id']}/latest",
+        headers={"Authorization": f"Bearer {owner}"},
+    )
+
+    assert by_id.status_code == 403
+    assert by_job.status_code == 403

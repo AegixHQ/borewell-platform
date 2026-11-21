@@ -12,6 +12,9 @@ import { DEMO_MODE, PLATFORM_SPINE_URL } from "../services/platform";
 import { DEMO_ACCOUNTS } from "../services/demo";
 import { colors } from "../theme";
 import { useAction } from "../lib/hooks";
+import {
+  assertValid, chain, emailError, normaliseEmail, passwordError, phoneError, useFieldRefs,
+} from "../lib/form";
 import { useSession } from "../lib/session";
 import { GOOGLE_ENABLED, getGoogleIdToken } from "../lib/google";
 import DepthGauge from "../components/DepthGauge";
@@ -35,13 +38,21 @@ export default function AuthScreen() {
   const [notice, setNotice] = useState(null);
 
   const registering = mode === "register";
+  const refs = useFieldRefs(3); // email, phone, password
+  const order = registering ? refs : [refs[0], refs[2]]; // sign-in has no phone field
 
   async function submit() {
     await run(async () => {
+      const cleanEmail = normaliseEmail(email);
+      assertValid({
+        email: emailError(email),
+        phone: registering ? phoneError(phone) : null,
+        password: registering ? passwordError(password) : password ? null : "Enter your password.",
+      });
       const { access_token: token } = registering
-        ? await registerAccount(PLATFORM_SPINE_URL, { email, password, phone, role })
-        : await login(PLATFORM_SPINE_URL, email, password);
-      await signIn({ token, email });
+        ? await registerAccount(PLATFORM_SPINE_URL, { email: cleanEmail, password, phone, role })
+        : await login(PLATFORM_SPINE_URL, cleanEmail, password);
+      await signIn({ token, email: cleanEmail });
     });
   }
 
@@ -122,6 +133,8 @@ export default function AuthScreen() {
               autoCorrect={false}
               keyboardType="email-address"
               textContentType="emailAddress"
+              autoComplete="email"
+              {...chain(order, 0, submit)}
             />
           </Field>
 
@@ -132,6 +145,10 @@ export default function AuthScreen() {
                 onChangeText={(value) => { setPhone(value); clearFieldError("phone"); }}
                 placeholder="+91 "
                 keyboardType="phone-pad"
+<<<<<<< HEAD
+=======
+                {...chain(order, 1, submit)}
+>>>>>>> origin/main
               />
             </Field>
           )}
@@ -144,6 +161,7 @@ export default function AuthScreen() {
               secureTextEntry
               autoCapitalize="none"
               textContentType={registering ? "newPassword" : "password"}
+              {...chain(order, order.length - 1, submit)}
             />
           </Field>
 

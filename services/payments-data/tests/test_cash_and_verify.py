@@ -3,6 +3,7 @@ client-side verify endpoint."""
 
 import hashlib
 import hmac
+import json
 import uuid
 from unittest.mock import patch
 
@@ -107,12 +108,99 @@ def test_other_customer_cannot_choose_cash_for_my_payment(client):
     assert _post(client, pid, "choose-cash", OTHER_CUST).status_code == 403
 
 
-def test_cannot_choose_cash_once_an_online_order_exists(client):
+def test_can_choose_cash_after_an_online_order_exists(client):
     pid = _new_payment(client)
     _with_order(client, pid)
     resp = _post(client, pid, "choose-cash", CUST_TOKEN)
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "ONLINE_ORDER_OPEN"
+    assert resp.status_code == 200
+    assert resp.json()["method"] == "cash" and resp.json()["status"] == "pending"
+    # the order is kept so a capture that still happens can be recorded
+    assert resp.json()["razorpay_order_id"] == "order_abc"
+
+
+def test_switching_cash_to_online_again_reuses_the_same_order(client):
+    pid = _new_payment(client)
+    _with_order(client, pid)
+    _post(client, pid, "choose-cash", CUST_TOKEN)
+    assert _post(client, pid, "choose-online", CUST_TOKEN).json()["method"] == "online"
+    with patch("app.main.get_razorpay_config", return_value=CFG), patch(
+        "app.main.create_order"
+    ) as mk:
+        resp = _post(client, pid, "create-order", CUST_TOKEN)
+    assert resp.status_code == 200 and resp.json()["razorpay_order_id"] == "order_abc"
+    mk.assert_not_called()
+
+
+def _webhook(client, event, order_id, pay_id="pay_late"):
+    body = json.dumps(
+        {"event": event, "payload": {"payment": {"entity": {"id": pay_id, "order_id": order_id}}}}
+    ).encode()
+    with patch("app.main.verify_webhook_signature", return_value=None):
+        return client.post(
+            "/v1/payments/webhook", content=body, headers={"Content-Type": "application/json"}
+        )
+
+
+def test_late_failed_webhook_does_not_close_a_cash_payment(client):
+    pid = _new_payment(client)
+    _with_order(client, pid)
+    _post(client, pid, "choose-cash", CUST_TOKEN)
+
+    resp = _webhook(client, "payment.failed", "order_abc")
+
+    assert resp.json()["status"] == "ignored_cash_selected"
+    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
+    assert got["status"] == "pending" and got["method"] == "cash"
+
+
+def test_captured_webhook_after_switching_to_cash_records_an_online_payment(client):
+    pid = _new_payment(client)
+    _with_order(client, pid)
+    _post(client, pid, "choose-cash", CUST_TOKEN)
+
+    resp = _webhook(client, "payment.captured", "order_abc")
+
+    assert resp.json()["status"] == "completed"
+    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
+    assert got["status"] == "completed" and got["method"] == "online"
+
+
+def test_capture_after_cash_was_confirmed_changes_nothing_and_is_logged(client, caplog):
+    pid = _new_payment(client)
+    _with_order(client, pid)
+    _post(client, pid, "choose-cash", CUST_TOKEN)
+    _post(client, pid, "confirm-cash", CONTRACTOR)
+
+    with caplog.at_level("WARNING"):
+        resp = _webhook(client, "payment.captured", "order_abc")
+
+    assert resp.json()["status"] == "already_completed"
+    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
+    assert got["method"] == "cash" and got.get("razorpay_payment_id") is None
+    assert "razorpay.double_settlement" in caplog.text
+
+
+def test_verify_with_valid_signature_completes_a_payment_switched_to_cash(client):
+    pid = _new_payment(client)
+    _with_order(client, pid)
+    _post(client, pid, "choose-cash", CUST_TOKEN)
+    body = {
+        "razorpay_order_id": "order_abc",
+        "razorpay_payment_id": "pay_1",
+        "razorpay_signature": _sig("order_abc", "pay_1"),
+    }
+    with patch("app.main.get_razorpay_config", return_value=CFG), patch(
+        "app.gateway.razorpay_client.get_razorpay_config", return_value=CFG
+    ):
+        resp = _post(client, pid, "verify", CUST_TOKEN, json=body)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "completed" and resp.json()["method"] == "online"
+
+
+def test_resource_owner_cannot_list_payments(client):
+    _new_payment(client)
+    resp = client.get("/v1/payments", headers=_h(OWNER))
+    assert resp.status_code == 403
 
 
 def test_cash_payment_cannot_open_a_razorpay_order(client):

@@ -17,6 +17,7 @@ import {
   formatInr, resourceStatusTone,
 } from "../../theme";
 import { useAction, useLoad, useToast } from "../../lib/hooks";
+import { chain, useFieldRefs } from "../../lib/form";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
 import SiteMap from "../../components/SiteMap";
@@ -124,7 +125,10 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
     resource.lat !== null && resource.lat !== undefined ? { lat: resource.lat, lng: resource.lng } : PILOT_CENTER
   );
 
+  const refs = useFieldRefs(3); // name, vehicle, hourly rate (notes is multiline: Enter stays a newline)
+
   async function save() {
+    if (!form.name.trim()) return;
     await action.run(async () => {
       const payload = {
         resource_type: form.resource_type,
@@ -171,13 +175,19 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
         />
       </Field>
       <Field label="Name" hint="What a contractor will see">
-        <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Tata 1613 DTH rig" />
+        <Input
+          value={form.name}
+          onChangeText={(v) => setForm({ ...form, name: v })}
+          placeholder="e.g. Tata 1613 DTH rig"
+          {...chain(refs, 0, save)}
+        />
       </Field>
       <Field label="Vehicle / description">
         <Input
           value={form.vehicle_type}
           onChangeText={(v) => setForm({ ...form, vehicle_type: v })}
           placeholder="e.g. Truck-mounted DTH 6.5”"
+          {...chain(refs, 1, save)}
         />
       </Field>
       <Field label="Hourly rate (₹)" hint="Optional - can be set later">
@@ -186,6 +196,7 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
           keyboardType="number-pad"
           onChangeText={(v) => setForm({ ...form, hourly_rate: v })}
           placeholder="2800"
+          {...chain(refs, 2, save)}
         />
       </Field>
       {!isNew && (

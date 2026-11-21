@@ -4,14 +4,14 @@
  */
 import { useState } from "react";
 import { View } from "react-native";
-import { RESOURCE_NETWORK_URL, listBookings } from "../../services/platform";
+import { RESOURCE_NETWORK_URL, listBookings, releaseBooking } from "../../services/platform";
 import { BOOKING_STATUS_LABELS, bookingTone, formatRelative, shortId } from "../../theme";
-import { useLoad } from "../../lib/hooks";
+import { useAction, useLoad, useToast } from "../../lib/hooks";
 import { useNav } from "../../lib/nav";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
 import {
-  Alert, Badge, Body, Card, EmptyState, Icon, Loading, Pills, Row, Screen, Tile,
+  Alert, Badge, Body, Button, Card, EmptyState, Icon, Loading, Pills, Row, Screen, Tile, Toast,
 } from "../../components/ui";
 
 const FILTERS = [
@@ -19,12 +19,15 @@ const FILTERS = [
   { value: "pending", label: "Pending" },
   { value: "accepted", label: "Accepted" },
   { value: "rejected", label: "Declined" },
+  { value: "completed", label: "Finished" },
 ];
 
 export default function Bookings() {
   const { session } = useSession();
   const { navigate } = useNav();
   const [filter, setFilter] = useState("all");
+  const [toast, setToast] = useToast();
+  const action = useAction();
   const bookings = useLoad(() => listBookings(RESOURCE_NETWORK_URL, session.token), [session.token], { pollMs: 30000 });
 
   const all = bookings.data || [];
@@ -33,10 +36,20 @@ export default function Bookings() {
     FILTERS.map((f) => [f.value, f.value === "all" ? all.length : all.filter((b) => b.status === f.value).length])
   );
 
+  // Frees the rig once the work is done, so it can be booked by someone else.
+  async function release(booking) {
+    await action.run(async () => {
+      await releaseBooking(RESOURCE_NETWORK_URL, session.token, booking.booking_id);
+      setToast("Rig released - it is available again");
+      await bookings.reload();
+    });
+  }
+
   return (
     <Screen>
       <PageHeader title="Rig bookings" subtitle="Requests you've sent to rig owners." />
       {!!bookings.error && <Alert>{bookings.error.message}</Alert>}
+      {!!action.error && <Alert>{action.error}</Alert>}
 
       <Pills value={filter} onChange={setFilter} options={FILTERS.map((f) => ({ ...f, count: counts[f.value] }))} />
 
@@ -67,8 +80,18 @@ export default function Bookings() {
               <Body size={11} muted>{formatRelative(b.responded_at || b.created_at)}</Body>
             </View>
           </Row>
+          {b.status === "accepted" && (
+            <Button
+              title="Done with this rig - release it"
+              variant="light"
+              size="sm"
+              busy={action.busy}
+              onPress={() => release(b)}
+            />
+          )}
         </Card>
       ))}
+      <Toast message={toast} />
     </Screen>
   );
 }

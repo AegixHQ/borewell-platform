@@ -7,7 +7,7 @@ import { useState } from "react";
 import { Linking, View } from "react-native";
 import {
   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL, RESOURCE_NETWORK_URL,
-  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
+  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult, releaseBooking,
   getLatestQuotationForJob, listBookings, listPayments, logJobCompletion,
   recordWalkInCash, rejectCashPayment, rejectQuotation, updateJobStatus,
 } from "../../services/platform";
@@ -16,6 +16,7 @@ import {
   formatCoords, formatInr, jobTypeLabel, nextStage, shortId, stageIndex, stageTone,
 } from "../../theme";
 import { useAction, useAreaName, useLoad, useToast } from "../../lib/hooks";
+import { chain, useFieldRefs } from "../../lib/form";
 import { useNav } from "../../lib/nav";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
@@ -58,6 +59,8 @@ export default function ContractorJob({ params }) {
   const q = quote.data;
   const jobBookings = (bookings.data || []).filter((b) => b.job_id === jobId);
   const payment = (payments.data || []).find((p) => p.job_id === jobId);
+  // The rig the contractor has on this job right now (accepted, not yet freed).
+  const activeBooking = jobBookings.find((b) => b.status === "accepted");
 
   async function handleAdvance() {
     const next = nextStage(job.data.status);
@@ -66,6 +69,17 @@ export default function ContractorJob({ params }) {
       setSheet(null);
       setToast(`Moved to ${STAGE_LABELS[next]}`);
       await job.reload();
+    });
+  }
+
+  // Frees the rig as soon as the work is done, without waiting for the owner:
+  // it goes back on the available list and can be booked by someone else.
+  async function handleRelease() {
+    await action.run(async () => {
+      await releaseBooking(RESOURCE_NETWORK_URL, session.token, activeBooking.booking_id);
+      setSheet(null);
+      setToast("Rig released - it is available again");
+      await bookings.reload();
     });
   }
 
@@ -141,9 +155,17 @@ export default function ContractorJob({ params }) {
 
   const next = nextStage(job.data.status);
   const atCompletion = job.data.status === "completion";
+  // At "completion" the actual depth and cost must be saved before the job can
+  // move on; the backend enforces it, this keeps the button from offering it.
+  const completionPending = atCompletion && !completion.data;
   const walkIn = !!job.data.walk_in;
+  // An admin opens this same screen from the overview to look, not to act:
+  // the actions below belong to the contractor (the services refuse them for
+  // an admin anyway - this just doesn't offer buttons that can only fail).
+  const readOnly = session.role === "admin";
+  const closingOut = completionPending && !readOnly;
   const awaitingDecision = !!q && (q.status === "draft" || q.status === "sent");
-  const canRecordCash = walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
+  const canRecordCash = !readOnly && walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
 
   return (
     <Screen>
@@ -188,8 +210,17 @@ export default function ContractorJob({ params }) {
           <View style={{ flex: 1 }} />
           <Body size={13} muted dark>{STAGE_LABELS[job.data.status]}</Body>
         </Row>
-        {next ? (
-          <Button title={`Advance to ${STAGE_LABELS[next]}`} variant="saffron" trailing onPress={() => setSheet("advance")} />
+        {readOnly ? (
+          <Body muted dark>Read-only view - the contractor moves this job along.</Body>
+        ) : completionPending ? (
+          <Body muted dark>Record the actual depth and cost below to move this job on.</Body>
+        ) : next ? (
+          <Button
+            title={`Advance to ${STAGE_LABELS[next]}`}
+            variant="saffron"
+            trailing
+            onPress={() => { action.setError(null); setSheet("advance"); }}
+          />
         ) : (
           <Body muted dark>This job is closed - there is no stage after this one.</Body>
         )}
@@ -205,7 +236,8 @@ export default function ContractorJob({ params }) {
 
         {quote.loading && !quote.data && <Loading label="Checking for a quotation…" />}
 
-        {!q && !quote.loading && (
+        {!q && !quote.loading && readOnly && <Body muted size={14}>No quotation has been generated yet.</Body>}
+        {!q && !quote.loading && !readOnly && (
           <>
             <Body muted size={14}>
               No quotation yet. Generating one uses your pricing rules and, inside a pilot area, the local
@@ -266,7 +298,7 @@ export default function ContractorJob({ params }) {
               <Amount size={24} color={colors.saffron}>{formatInr(q.total_estimate)}</Amount>
             </View>
 
-            {walkIn && awaitingDecision && (
+            {!readOnly && walkIn && awaitingDecision && (
               <>
                 <Alert tone="info">
                   Show {job.data.customer_name || "the customer"} this price. Record their answer once they have
@@ -282,14 +314,24 @@ export default function ContractorJob({ params }) {
               <Body size={12} muted>Approved by you on the customer&apos;s behalf.</Body>
             )}
 
-            {(!walkIn || q.status !== "approved") && (
+            {/* A paid job's quotation is closed: money already moved against it. */}
+            {!readOnly && (!walkIn || q.status !== "approved") && payment?.status !== "completed" && (
               <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
             )}
           </>
         )}
       </Card>
 
-      {atCompletion && !completion.data && (
+      {closingOut && completion.error && (
+        <Card>
+          <Alert>{completion.error.message}</Alert>
+          <Button title="Try again" variant="light" onPress={() => completion.reload()} />
+        </Card>
+      )}
+      {closingOut && !completion.error && completion.loading && (
+        <Card><Loading label="Checking for a completion record…" /></Card>
+      )}
+      {closingOut && !completion.error && !completion.loading && (
         <CompletionCard
           jobId={jobId}
           quote={q}
@@ -322,6 +364,9 @@ export default function ContractorJob({ params }) {
         </Card>
       )}
 
+      {/* Bookings are scoped to the contractor who made them: an admin gets 403
+          and would otherwise see a false "no rig requested". */}
+      {!readOnly && (
       <Card dark>
         <Row>
           <Title size={20} dark>Rig booking</Title>
@@ -333,7 +378,7 @@ export default function ContractorJob({ params }) {
         {jobBookings.length === 0 ? (
           <>
             <Body muted dark size={14}>No rig requested for this site yet.</Body>
-            <Button title="Find nearby rigs" variant="saffron" trailing onPress={() => navigate("contractor.rigs", { jobId })} />
+            {!readOnly && <Button title="Find nearby rigs" variant="saffron" trailing onPress={() => navigate("contractor.rigs", { jobId })} />}
           </>
         ) : (
           <>
@@ -353,10 +398,14 @@ export default function ContractorJob({ params }) {
                 </Row>
               </Inset>
             ))}
-            <Button title="Search again" variant="ghostDark" size="sm" onPress={() => navigate("contractor.rigs", { jobId })} />
+            {!readOnly && activeBooking && (
+              <Button title="Release rig" variant="saffron" size="sm" onPress={() => { action.setError(null); setSheet("release"); }} />
+            )}
+            {!readOnly && <Button title="Search again" variant="ghostDark" size="sm" onPress={() => navigate("contractor.rigs", { jobId })} />}
           </>
         )}
       </Card>
+      )}
 
       <Card>
         <Row>
@@ -379,7 +428,7 @@ export default function ContractorJob({ params }) {
             <Button title="Record cash received" variant="saffron" size="sm" onPress={() => setSheet("walkin-cash")} />
           </>
         )}
-        {payment?.method === "cash" && payment.status === "pending" && (
+        {!readOnly && payment?.method === "cash" && payment.status === "pending" && (
           <>
             <Alert tone="info">
               The customer is paying {formatInr(payment.amount)} in cash. Only confirm once the money is in your hand - this marks the job as paid.
@@ -448,11 +497,22 @@ export default function ContractorJob({ params }) {
         onClose={() => setSheet(null)}
       />
       <Confirm
+        visible={sheet === "release"}
+        title="Release this rig?"
+        body="The rig goes back to the owner's available list and can be booked by others. Do this once the drilling is finished and the rig has left the site."
+        confirmLabel="Release rig"
+        busy={action.busy}
+        error={action.error}
+        onConfirm={handleRelease}
+        onClose={() => setSheet(null)}
+      />
+      <Confirm
         visible={sheet === "advance"}
         title={next ? `Move to ${STAGE_LABELS[next]}?` : ""}
         body="Stages only move forward, one step at a time - this can't be undone from the app."
         confirmLabel={next ? `Move to ${STAGE_LABELS[next]}` : "Move"}
         busy={action.busy}
+        error={action.error}
         onConfirm={handleAdvance}
         onClose={() => setSheet(null)}
       />
@@ -491,10 +551,20 @@ function CompletionCard({ jobId, quote, onDone }) {
   const [depth, setDepth] = useState("");
   const [cost, setCost] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const refs = useFieldRefs(2); // depth, cost
+
+  const valid = Number.isFinite(Number(depth)) && Number(depth) > 0
+    && Number.isFinite(Number(cost)) && Number(cost) > 0;
 
   const overage = quote && Number(depth) > Number(quote.estimated_depth_range.max_ft)
     ? Number(depth) - Number(quote.estimated_depth_range.max_ft)
     : 0;
+
+  function review() {
+    if (!valid) return;
+    action.setError(null);
+    setConfirming(true);
+  }
 
   async function submit() {
     await action.run(async () => {
@@ -514,10 +584,10 @@ function CompletionCard({ jobId, quote, onDone }) {
         Recorded once and never editable afterwards - variance against the approved quotation is computed at write time.
       </Body>
       <Field label="Actual depth drilled (ft)">
-        <Input value={depth} onChangeText={setDepth} keyboardType="number-pad" placeholder="e.g. 468" />
+        <Input value={depth} onChangeText={setDepth} keyboardType="number-pad" placeholder="e.g. 468" {...chain(refs, 0, review)} />
       </Field>
       <Field label="Actual cost (₹)">
-        <Input value={cost} onChangeText={setCost} keyboardType="decimal-pad" placeholder="e.g. 99500" />
+        <Input value={cost} onChangeText={setCost} keyboardType="decimal-pad" placeholder="e.g. 99500" {...chain(refs, 1, review)} />
       </Field>
       {overage > 0 && quote?.depth_overage_rate_per_ft && (
         <Alert tone="info">
@@ -525,13 +595,14 @@ function CompletionCard({ jobId, quote, onDone }) {
         </Alert>
       )}
       {!!action.error && <Alert>{action.error}</Alert>}
-      <Button title="Mark complete" disabled={!depth || !cost} onPress={() => setConfirming(true)} />
+      <Button title="Mark complete" disabled={!valid} onPress={review} />
       <Confirm
         visible={confirming}
         title="Mark this job complete?"
         body={`Recording ${depth} ft and ${formatInr(cost)}. This is written once and can't be changed later.`}
         confirmLabel="Mark complete"
         busy={action.busy}
+        error={action.error}
         onConfirm={submit}
         onClose={() => setConfirming(false)}
       />
@@ -543,6 +614,7 @@ function EditQuoteSheet({ visible, quote, onClose, onSaved }) {
   const { session } = useSession();
   const action = useAction();
   const [items, setItems] = useState(() => quote.line_items.map((i) => ({ ...i, amount: String(i.amount) })));
+  const refs = useFieldRefs(items.length);
 
   const subtotal = items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
   const total = subtotal + Number(quote.margin_amount || 0);
@@ -578,6 +650,7 @@ function EditQuoteSheet({ visible, quote, onClose, onSaved }) {
             value={item.amount}
             keyboardType="decimal-pad"
             onChangeText={(value) => setItems((list) => list.map((it, idx) => (idx === i ? { ...it, amount: value } : it)))}
+            {...chain(refs, i, save)}
           />
         </Field>
       ))}

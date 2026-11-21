@@ -9,7 +9,9 @@
  */
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -24,15 +26,19 @@ export function Screen({ children, dark, style, scroll = true, contentStyle }) {
   if (!scroll) {
     return <View style={[{ flex: 1, backgroundColor: background }, style]}>{children}</View>;
   }
+  // KeyboardAvoidingView on both platforms: Expo's translucent status bar
+  // (the default) stops Android's own resize from lifting the form, and the
+  // Expo config docs say to use KeyboardAvoidingView in that case.
   return (
-    <View style={[{ flex: 1, backgroundColor: background }, style]}>
+    <KeyboardAvoidingView behavior="padding" style={[{ flex: 1, backgroundColor: background }, style]}>
       <ScrollView
         contentContainerStyle={[{ padding: 20, paddingBottom: 120, gap: 14 }, contentStyle]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       >
         {children}
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -276,7 +282,10 @@ export function Loading({ label = "Loading…", dark }) {
 export function Sheet({ visible, title, onClose, children, actions }) {
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: "rgba(20,22,25,0.45)", justifyContent: "flex-end" }}>
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={{ flex: 1, backgroundColor: "rgba(20,22,25,0.45)", justifyContent: "flex-end" }}
+      >
         {/* Surface, not ground: insets inside a sheet are ground, and a
             ground-on-ground sheet loses them. */}
         <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, paddingBottom: 34, maxHeight: "92%", gap: 14 }}>
@@ -290,12 +299,12 @@ export function Sheet({ visible, title, onClose, children, actions }) {
           </ScrollView>
           {actions}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
-export function Confirm({ visible, title, body, confirmLabel, onConfirm, onClose, busy }) {
+export function Confirm({ visible, title, body, confirmLabel, onConfirm, onClose, busy, error }) {
   return (
     <Sheet
       visible={visible}
@@ -309,6 +318,7 @@ export function Confirm({ visible, title, body, confirmLabel, onConfirm, onClose
       }
     >
       <Body muted>{body}</Body>
+      {!!error && <Alert>{error}</Alert>}
     </Sheet>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from "../../services/platform";
 import { JOB_TYPES, PILOT_CENTER, colors, formatCoords, formatInr } from "../../theme";
 import { clearAreaCache, useAction, useLoad, useToast } from "../../lib/hooks";
+import { chain, useFieldRefs } from "../../lib/form";
 import { useSession } from "../../lib/session";
 import { PageHeader } from "../../components/AppShell";
 import SiteMap from "../../components/SiteMap";
@@ -84,6 +85,10 @@ function PricingRules({ onToast }) {
   const configured = new Set((rules.data || []).map((r) => r.job_type));
   const preview = estimate(values);
 
+  // Tab order follows what is on screen: group by group.
+  const ordered = GROUPS.flatMap((group) => FIELDS.filter((f) => f.group === group));
+  const refs = useFieldRefs(ordered.length);
+
   async function save() {
     await action.run(async () => {
       await upsertPricingRule(QUOTATION_URL, session.token, {
@@ -122,6 +127,7 @@ function PricingRules({ onToast }) {
                   value={values[f.key]}
                   keyboardType="decimal-pad"
                   onChangeText={(value) => setValue(f.key, value)}
+                  {...chain(refs, ordered.indexOf(f), save)}
                 />
               </Field>
             ))}
@@ -202,6 +208,7 @@ function ServiceAreas({ onToast }) {
   // centre - SiteMap owns its centre after mount.
   const [mapKey, setMapKey] = useState(0);
   const action = useAction();
+  const refs = useFieldRefs(6); // name, district, state, radius, depth, band
 
   const areas = useLoad(() => listServiceAreas(RESOURCE_NETWORK_URL, session.token), [session.token]);
 
@@ -219,6 +226,7 @@ function ServiceAreas({ onToast }) {
   }
 
   async function save() {
+    if (!form.name || !form.estimated_water_depth_ft) return;
     await action.run(async () => {
       await upsertServiceArea(RESOURCE_NETWORK_URL, session.token, {
         name: form.name,
@@ -255,24 +263,24 @@ function ServiceAreas({ onToast }) {
           Saving a name that already exists updates it rather than adding a duplicate.
         </Body>
         <Field label="Village / area name">
-          <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Kallikudi" />
+          <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Kallikudi" {...chain(refs, 0, save)} />
         </Field>
         <Row gap={10}>
           <View style={{ flex: 1 }}>
             <Field label="District">
-              <Input value={form.district} onChangeText={(v) => setForm({ ...form, district: v })} />
+              <Input value={form.district} onChangeText={(v) => setForm({ ...form, district: v })} {...chain(refs, 1, save)} />
             </Field>
           </View>
           <View style={{ flex: 1 }}>
             <Field label="State">
-              <Input value={form.state} onChangeText={(v) => setForm({ ...form, state: v })} />
+              <Input value={form.state} onChangeText={(v) => setForm({ ...form, state: v })} {...chain(refs, 2, save)} />
             </Field>
           </View>
         </Row>
         <Row gap={10}>
           <View style={{ flex: 1 }}>
             <Field label="Radius (km)">
-              <Input value={form.radius_km} keyboardType="decimal-pad" onChangeText={(v) => setForm({ ...form, radius_km: v })} />
+              <Input value={form.radius_km} keyboardType="decimal-pad" onChangeText={(v) => setForm({ ...form, radius_km: v })} {...chain(refs, 3, save)} />
             </Field>
           </View>
           <View style={{ flex: 1 }}>
@@ -281,6 +289,7 @@ function ServiceAreas({ onToast }) {
                 value={form.estimated_water_depth_ft}
                 keyboardType="number-pad"
                 onChangeText={(v) => setForm({ ...form, estimated_water_depth_ft: v })}
+                {...chain(refs, 4, save)}
               />
             </Field>
           </View>
@@ -290,6 +299,7 @@ function ServiceAreas({ onToast }) {
                 value={form.confidence_band_ft}
                 keyboardType="number-pad"
                 onChangeText={(v) => setForm({ ...form, confidence_band_ft: v })}
+                {...chain(refs, 5, save)}
               />
             </Field>
           </View>

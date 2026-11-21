@@ -109,6 +109,8 @@ paths:
           description: Only the owning contractor may edit
         '404':
           description: Quotation not found
+        '409':
+          description: QUOTATION_SUPERSEDED - only the latest version of a job's quotation can be edited
   /v1/quotations/job/{job_id}/latest:
     get:
       summary: Get the latest quotation version for a job

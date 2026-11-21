@@ -513,7 +513,12 @@ def get_payment(
 
 
 @app.get("/v1/payments", response_model=list[schemas.PaymentResponse])
-def list_payments(db: Session = Depends(get_db), claims: dict = Depends(get_current_claims)):
+def list_payments(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
+):
+    # resource_owner is deliberately excluded: it used to fall through the
+    # customer filter below and receive EVERY customer's payments.
     query = db.query(models.Payment)
     if claims["role"] == "customer":
         query = query.filter(models.Payment.customer_id == claims["sub"])
@@ -644,6 +649,17 @@ def _mark_completed(db: Session, payment: models.Payment) -> None:
     )
 
 
+def _log_double_settlement(payment: models.Payment, razorpay_payment_id: str) -> None:
+    """Cash was already confirmed AND Razorpay captured money for the same
+    payment. Nothing is overwritten; this line is how ops finds it to refund."""
+    logger.warning(
+        "razorpay.double_settlement payment_id=%s razorpay_payment_id=%s - cash was already "
+        "confirmed; the online capture needs a manual refund",
+        payment.id,
+        razorpay_payment_id,
+    )
+
+
 @app.post("/v1/payments/{payment_id}/choose-cash", response_model=schemas.PaymentResponse)
 def choose_cash(
     payment_id: uuid.UUID,
@@ -652,19 +668,13 @@ def choose_cash(
 ):
     """The customer will pay the contractor in cash. The payment stays
     'pending' until a contractor confirms the cash arrived (confirm-cash);
-    nothing the customer's own app does can complete it. Refused once a
-    Razorpay order exists: that order could still be paid online later, so
-    the same quotation could end up settled twice."""
+    nothing the customer's own app does can complete it. Allowed even after
+    an online checkout was opened (the customer may change their mind). The
+    Razorpay order id is KEPT: if money is nevertheless captured on that
+    order, the webhook/verify path records it as an online payment - what
+    Razorpay actually captured is the truth - and a second settlement (cash
+    already confirmed) is logged as razorpay.double_settlement for a refund."""
     payment = _own_pending_payment(db, payment_id, claims)
-    if payment.razorpay_order_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "ONLINE_ORDER_OPEN",
-                "message": "An online payment is already open for this quotation. Finish it, "
-                "or ask your contractor to take payment on a fresh request.",
-            },
-        )
     payment.method = "cash"
     db.commit()
     db.refresh(payment)
@@ -767,11 +777,6 @@ def verify_payment(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "You can only verify your own payments."},
         )
-    if payment.method == "cash":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "PAYMENT_IS_CASH", "message": "This payment is set to cash."},
-        )
     if not payment.razorpay_order_id or payment.razorpay_order_id != payload.razorpay_order_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -797,7 +802,12 @@ def verify_payment(
     if payment.status != "completed":
         payment.razorpay_payment_id = payload.razorpay_payment_id
         payment.status = "completed"
+        # The signature proves Razorpay took the money, whatever the customer
+        # last selected (they may have switched to cash after opening checkout).
+        payment.method = "online"
         _mark_completed(db, payment)
+    elif payment.method == "cash":
+        _log_double_settlement(payment, payload.razorpay_payment_id)
     return _payment_to_response(payment)
 
 
@@ -995,9 +1005,13 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     if event == "payment.captured":
         if payment.status == "completed":
             # Idempotent no-op - see this function's docstring. Still 200.
+            if payment.method == "cash":
+                _log_double_settlement(payment, razorpay_payment_id)
             return {"status": "already_completed", "payment_id": payment.id}
         payment.razorpay_payment_id = razorpay_payment_id
         payment.status = "completed"
+        # Captured money wins over a later switch to cash (see choose_cash).
+        payment.method = "online"
         db.commit()
         db.refresh(payment)
         events.payment_completed(
@@ -1017,6 +1031,10 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
         # write-once rule elsewhere in this platform.
         if payment.status == "completed":
             return {"status": "ignored_already_completed", "payment_id": payment.id}
+        # A failed attempt on an order the customer has since abandoned for
+        # cash must not close the cash payment they are now relying on.
+        if payment.method == "cash":
+            return {"status": "ignored_cash_selected", "payment_id": payment.id}
         payment.razorpay_payment_id = razorpay_payment_id
         payment.status = "failed"
         db.commit()

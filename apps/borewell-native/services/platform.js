@@ -156,6 +156,24 @@ export async function updateJobStatus(platformSpineUrl, token, jobId, newStatus)
   });
 }
 
+// --- platform-spine: administration (admin only) ---
+
+export async function listUsers(platformSpineUrl, token, { role, limit } = {}) {
+  const params = new URLSearchParams();
+  if (role) params.set("role", role);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return request(platformSpineUrl, `/v1/admin/users${query ? `?${query}` : ""}`, { token });
+}
+
+export async function createContractor(platformSpineUrl, token, { email, password, phone }) {
+  return request(platformSpineUrl, "/v1/admin/contractors", {
+    method: "POST",
+    token,
+    body: { email, password, phone: phone || undefined },
+  });
+}
+
 // --- quotation: pricing rules (contractor only) ---
 
 export async function upsertPricingRule(quotationUrl, token, rule) {
@@ -299,6 +317,10 @@ export async function acceptBooking(resourceNetworkUrl, token, bookingId) {
     method: "POST",
     token,
   });
+}
+
+export async function releaseBooking(resourceNetworkUrl, token, bookingId) {
+  return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/release`, { method: "POST", token });
 }
 
 export async function rejectBooking(resourceNetworkUrl, token, bookingId) {

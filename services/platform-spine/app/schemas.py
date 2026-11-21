@@ -8,18 +8,39 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from app.models import JOB_STATUSES, PUBLIC_ROLES
 
 
+def _lowercase_email(v: str) -> str:
+    # One account per address however it was typed: "Asha@X.com" and
+    # "asha@x.com" used to be two different accounts. Lookups also compare
+    # lower-cased, so accounts stored before this still match.
+    return v.strip().lower()
+
+
+def _password_fits_bcrypt(v: str) -> str:
+    if len(v.encode("utf-8")) > 72:
+        raise ValueError("password must be at most 72 bytes (about 72 characters)")
+    return v
+
+
+def _indian_mobile(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    digits = v.replace("+91", "").replace(" ", "").replace("-", "")
+    if not (digits.isdigit() and len(digits) == 10):
+        raise ValueError(
+            "phone must be a valid 10-digit Indian mobile number, optionally prefixed with +91"
+        )
+    return v
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     phone: Optional[str] = Field(default=None, max_length=20)
     role: str = Field(default="customer")
 
-    @field_validator("password")
-    @classmethod
-    def password_fits_bcrypt(cls, v):
-        if len(v.encode("utf-8")) > 72:
-            raise ValueError("password must be at most 72 bytes (about 72 characters)")
-        return v
+    _email = field_validator("email")(_lowercase_email)
+    _password = field_validator("password")(_password_fits_bcrypt)
+    _phone = field_validator("phone")(_indian_mobile)
 
     @field_validator("role")
     @classmethod
@@ -28,22 +49,36 @@ class RegisterRequest(BaseModel):
             raise ValueError(f"role must be one of {PUBLIC_ROLES}")
         return v
 
-    @field_validator("phone")
-    @classmethod
-    def phone_format(cls, v):
-        if v is None:
-            return v
-        digits = v.replace("+91", "").replace(" ", "").replace("-", "")
-        if not (digits.isdigit() and len(digits) == 10):
-            raise ValueError(
-                "phone must be a valid 10-digit Indian mobile number, optionally prefixed with +91"
-            )
-        return v
+
+class AdminCreateContractorRequest(BaseModel):
+    """An administrator adding a contractor. No role field on purpose: this
+    endpoint can only ever create contractors, and extra fields are refused so
+    a client cannot try to smuggle one in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    phone: Optional[str] = Field(default=None, max_length=20)
+
+    _email = field_validator("email")(_lowercase_email)
+    _password = field_validator("password")(_password_fits_bcrypt)
+    _phone = field_validator("phone")(_indian_mobile)
+
+
+class UserSummary(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    phone: Optional[str] = None
+    role: str
+    created_at: Optional[datetime] = None
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(max_length=128)
+
+    _email = field_validator("email")(_lowercase_email)
 
 
 class GoogleLoginRequest(BaseModel):

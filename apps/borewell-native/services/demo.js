@@ -95,9 +95,10 @@ function money(n) {
 // ---------------------------------------------------------------- seed data
 
 const users = [
-  { id: uuid("11111111-1111-4111-8111-111111111111"), email: "selvi@demo.in", role: "customer" },
-  { id: uuid("22222222-2222-4222-8222-222222222222"), email: "senthil@demo.in", role: "contractor" },
-  { id: uuid("33333333-3333-4333-8333-333333333333"), email: "murugan@demo.in", role: "resource_owner" },
+  { id: uuid("11111111-1111-4111-8111-111111111111"), email: "selvi@demo.in", role: "customer", created_at: iso(now - 30 * DAY) },
+  { id: uuid("22222222-2222-4222-8222-222222222222"), email: "senthil@demo.in", role: "contractor", created_at: iso(now - 29 * DAY) },
+  { id: uuid("33333333-3333-4333-8333-333333333333"), email: "murugan@demo.in", role: "resource_owner", created_at: iso(now - 28 * DAY) },
+  { id: uuid("55555555-5555-4555-8555-555555555555"), email: "admin@demo.in", role: "admin", created_at: iso(now - 40 * DAY) },
 ];
 const [CUSTOMER, CONTRACTOR, OWNER] = users;
 const OTHER_OWNER = uuid("44444444-4444-4444-8444-444444444444");
@@ -344,18 +345,40 @@ async function handle(method, path, body, headers) {
 
   // --- auth
   if (path === "/v1/auth/register" && method === "POST") {
-    const existing = users.find((u) => u.email === body.email);
-    const user = existing || { id: uuid(), email: body.email, role: body.role };
+    const email = String(body.email).trim().toLowerCase();
+    const existing = users.find((u) => u.email === email);
+    const user = existing || { id: uuid(), email, role: body.role, created_at: iso(Date.now()) };
     if (!existing) users.push(user);
     return ok({ access_token: token(user), role: user.role }, 201);
   }
   if (path === "/v1/auth/login" && method === "POST") {
     const user = users.find((u) => u.email.toLowerCase() === String(body.email).toLowerCase());
-    if (!user) return fail(401, "INVALID_CREDENTIALS", "No demo account with that email. Try selvi@demo.in, senthil@demo.in or murugan@demo.in.");
+    if (!user) return fail(401, "INVALID_CREDENTIALS", "No demo account with that email. Try selvi@demo.in, senthil@demo.in, murugan@demo.in or admin@demo.in.");
     return ok({ access_token: token(user), role: user.role });
   }
 
   if (!me) return fail(401, "MISSING_TOKEN", "Authorization token is required.");
+
+  // --- admin: accounts (the real service is platform-spine's /v1/admin/*)
+  if (seg[1] === "admin") {
+    if (me.role !== "admin") return fail(403, "FORBIDDEN", "This action requires one of roles: admin.");
+    if (path.split("?")[0] === "/v1/admin/users" && method === "GET") {
+      const role = new URLSearchParams(path.split("?")[1] || "").get("role");
+      const list = users
+        .filter((u) => !role || u.role === role)
+        .map((u) => ({ user_id: u.id, email: u.email, phone: u.phone || null, role: u.role, created_at: u.created_at || null }));
+      return ok(list.sort((a, b) => (String(a.created_at) < String(b.created_at) ? 1 : -1)));
+    }
+    if (path === "/v1/admin/contractors" && method === "POST") {
+      const email = String(body.email || "").trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(422, "VALIDATION_ERROR", "email is not a valid email address");
+      if (String(body.password || "").length < 8) return fail(422, "VALIDATION_ERROR", "password must be at least 8 characters");
+      if (users.some((u) => u.email === email)) return fail(409, "EMAIL_TAKEN", "An account with this email already exists.");
+      const user = { id: uuid(), email, role: "contractor", phone: body.phone || null, created_at: iso(Date.now()) };
+      users.push(user);
+      return ok({ user_id: user.id, email, phone: user.phone, role: "contractor", created_at: user.created_at }, 201);
+    }
+  }
 
   // --- jobs
   if (path === "/v1/jobs" && method === "POST") {
@@ -399,6 +422,7 @@ async function handle(method, path, body, headers) {
     return ok(job, 201);
   }
   if (path === "/v1/jobs" && method === "GET") {
+    if (me.role === "resource_owner") return fail(403, "FORBIDDEN", "This action requires one of roles: customer, contractor, admin.");
     const visible = me.role === "customer" ? jobs.filter((j) => j.customer_id === me.id) : jobs;
     return ok([...visible].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
   }
@@ -412,6 +436,9 @@ async function handle(method, path, body, headers) {
     const expected = STAGES[STAGES.indexOf(job.status) + 1];
     if (body.status !== expected) {
       return fail(400, "INVALID_TRANSITION", `Cannot move from '${job.status}' to '${body.status}' - the only allowed next state is '${expected}'.`);
+    }
+    if (job.status === "completion" && body.status === "payment" && !completions.some((c) => c.job_id === job.job_id)) {
+      return fail(409, "COMPLETION_REQUIRED", "Record the actual depth and cost for this job before moving it to payment.");
     }
     job.status = body.status;
     return ok(job);
@@ -433,6 +460,9 @@ async function handle(method, path, body, headers) {
       completed_at: iso(Date.now()),
     };
     completions.push(record);
+    releaseJobBookings(job.job_id); // job.completed frees the rigs booked for it
+    // The customer usually paid long before this point (see settleDemoPayment).
+    if (payments.some((p) => p.job_id === job.job_id && p.status === "completed")) job.status = "payment";
     return ok(record, 201);
   }
   if (seg[1] === "jobs" && seg[3] === "completion" && seg[4] === "result" && method === "GET") {
@@ -516,6 +546,10 @@ async function handle(method, path, body, headers) {
   if (seg[1] === "resources" && seg.length === 3 && method === "PATCH") {
     const r = resources.find((x) => x.resource_id === seg[2]);
     Object.assign(r, body, { hourly_rate: body.hourly_rate ? money(body.hourly_rate) : r.hourly_rate });
+    if (body.status === "available") {
+      // Owner says it is free: the accepted booking must not keep blocking it.
+      bookings.filter((b) => b.resource_id === r.resource_id && b.status === "accepted").forEach((b) => { b.status = "completed"; });
+    }
     return ok(r);
   }
   if (path === "/v1/resources/match" && method === "POST") {
@@ -574,6 +608,22 @@ async function handle(method, path, body, headers) {
     return ok(booking);
   }
 
+  if (seg[1] === "bookings" && seg[3] === "release" && method === "POST") {
+    if (me.role !== "contractor" && me.role !== "resource_owner") {
+      return fail(403, "FORBIDDEN", "This action requires one of roles: resource_owner, contractor.");
+    }
+    const booking = bookings.find((b) => b.booking_id === seg[2]);
+    if (!booking) return fail(404, "BOOKING_NOT_FOUND", "No booking request with this ID exists.");
+    const party = me.role === "resource_owner" ? booking.owner_id : booking.contractor_id;
+    if (party !== me.id) return fail(403, "FORBIDDEN", "You can only release your own bookings.");
+    if (booking.status === "completed") return ok(booking);
+    if (booking.status !== "accepted") {
+      return fail(409, "BOOKING_NOT_ACTIVE", `Only an accepted booking can be released; this one is '${booking.status}'.`);
+    }
+    releaseBooking(booking);
+    return ok(booking);
+  }
+
   // --- service areas
   if (path === "/v1/service-areas" && method === "GET") return ok(serviceAreas);
   if (path === "/v1/service-areas" && method === "POST") {
@@ -591,6 +641,7 @@ async function handle(method, path, body, headers) {
 
   // --- payments
   if (path === "/v1/payments" && method === "GET") {
+    if (me.role === "resource_owner") return fail(403, "FORBIDDEN", "This action requires one of roles: customer, contractor, admin.");
     const mine = me.role === "customer"
       ? payments.filter((p) => jobs.find((j) => j.job_id === p.job_id)?.customer_id === me.id)
       : payments;
@@ -671,6 +722,7 @@ async function handle(method, path, body, headers) {
     if (payment.razorpay_order_id !== body.razorpay_order_id) {
       return fail(400, "ORDER_MISMATCH", "That Razorpay order does not belong to this payment.");
     }
+    payment.method = "online"; // captured money is the truth, whatever was picked before
     settleDemoPayment(payment, body.razorpay_payment_id);
     return ok(payment);
   }
@@ -697,7 +749,8 @@ async function handle(method, path, body, headers) {
     }
     if (payment.status !== "pending") return fail(409, "PAYMENT_NOT_PENDING", `Payment status is '${payment.status}', not 'pending'.`);
     if (seg[3] === "choose-cash") {
-      if (payment.razorpay_order_id) return fail(409, "ONLINE_ORDER_OPEN", "An online payment is already open for this quotation.");
+      // Allowed even after "Pay online" was opened: the open order stays, and
+      // if it is paid anyway the real service logs a double settlement.
       payment.method = "cash";
     } else {
       payment.method = "online";
@@ -713,6 +766,17 @@ async function handle(method, path, body, headers) {
   return fail(404, "NOT_FOUND", `Demo backend has no route for ${method} ${path}`);
 }
 
+/** The rig is done with: end the booking and make the rig available again. */
+function releaseBooking(booking) {
+  booking.status = "completed";
+  const rig = resources.find((r) => r.resource_id === booking.resource_id);
+  if (rig) rig.status = "available";
+}
+
+function releaseJobBookings(jobId) {
+  bookings.filter((b) => b.job_id === jobId && b.status === "accepted").forEach(releaseBooking);
+}
+
 function latestQuote(jobId) {
   const forJob = quotations.filter((q) => q.job_id === jobId);
   return forJob.length ? forJob[forJob.length - 1] : null;
@@ -722,10 +786,10 @@ function latestQuote(jobId) {
 function settleDemoPayment(payment, razorpayPaymentId) {
   payment.status = "completed";
   if (razorpayPaymentId) payment.razorpay_payment_id = razorpayPaymentId;
-  // The real services move the job from "completion" to "payment" when
-  // payment-data publishes payment.completed.
+  // The real services move the job from "completion" to "payment" once
+  // payment.completed has arrived AND the completion record is logged.
   const job = jobs.find((j) => j.job_id === payment.job_id);
-  if (job && job.status === "completion") job.status = "payment";
+  if (job && job.status === "completion" && completions.some((c) => c.job_id === job.job_id)) job.status = "payment";
 }
 
 export function installMockApi() {
@@ -747,11 +811,12 @@ export function installMockApi() {
       return fail(500, "DEMO_ERROR", err.message);
     }
   };
-  console.info("Borewell demo mode: using the in-memory backend. Sign in with selvi@demo.in, senthil@demo.in or murugan@demo.in (any password).");
+  console.info("Borewell demo mode: using the in-memory backend. Sign in with selvi@demo.in, senthil@demo.in, murugan@demo.in or admin@demo.in (any password).");
 }
 
 export const DEMO_ACCOUNTS = [
   { email: "selvi@demo.in", label: "Customer" },
   { email: "senthil@demo.in", label: "Contractor" },
   { email: "murugan@demo.in", label: "Rig owner" },
+  { email: "admin@demo.in", label: "Admin" },
 ];
