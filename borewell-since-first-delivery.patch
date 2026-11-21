@@ -1,0 +1,3105 @@
+From fe2986f9e03b1f999d43c56d4bb28594db4314ed Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 11:26:40 +0530
+Subject: [PATCH 1/6] quotation, payments: fix edit-as-v2 500; allow cash after
+ opening online checkout
+
+quotation
+- PATCH /v1/quotations/{id} with line_items stored Decimal amounts in a JSON column and raised an unhandled 500 (the app showed 'service temporarily unavailable'). The mobile app always sends line_items; every existing test sent only total_estimate, so it was never caught.
+- editing a superseded version is refused (409 QUOTATION_SUPERSEDED) instead of minting a duplicate version number
+
+payments-data
+- choose-cash is allowed after an online order exists. The order id is kept; captured money wins (webhook/verify record method=online), a capture after cash was confirmed is logged as razorpay.double_settlement for refund
+- a late payment.failed webhook no longer closes a payment the customer switched to cash
+- GET /v1/payments no longer returns every customer's payments to a resource_owner
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ services/payments-data/app/main.py            | 54 +++++++----
+ .../tests/test_cash_and_verify.py             | 94 ++++++++++++++++++-
+ services/quotation/app/main.py                | 11 ++-
+ services/quotation/tests/test_quotations.py   | 43 +++++++++
+ 4 files changed, 180 insertions(+), 22 deletions(-)
+
+diff --git a/services/payments-data/app/main.py b/services/payments-data/app/main.py
+index 165929d..0343b22 100644
+--- a/services/payments-data/app/main.py
++++ b/services/payments-data/app/main.py
+@@ -513,7 +513,12 @@ def get_payment(
+ 
+ 
+ @app.get("/v1/payments", response_model=list[schemas.PaymentResponse])
+-def list_payments(db: Session = Depends(get_db), claims: dict = Depends(get_current_claims)):
++def list_payments(
++    db: Session = Depends(get_db),
++    claims: dict = Depends(require_role("customer", "contractor", "admin")),
++):
++    # resource_owner is deliberately excluded: it used to fall through the
++    # customer filter below and receive EVERY customer's payments.
+     query = db.query(models.Payment)
+     if claims["role"] == "customer":
+         query = query.filter(models.Payment.customer_id == claims["sub"])
+@@ -644,6 +649,17 @@ def _mark_completed(db: Session, payment: models.Payment) -> None:
+     )
+ 
+ 
++def _log_double_settlement(payment: models.Payment, razorpay_payment_id: str) -> None:
++    """Cash was already confirmed AND Razorpay captured money for the same
++    payment. Nothing is overwritten; this line is how ops finds it to refund."""
++    logger.warning(
++        "razorpay.double_settlement payment_id=%s razorpay_payment_id=%s - cash was already "
++        "confirmed; the online capture needs a manual refund",
++        payment.id,
++        razorpay_payment_id,
++    )
++
++
+ @app.post("/v1/payments/{payment_id}/choose-cash", response_model=schemas.PaymentResponse)
+ def choose_cash(
+     payment_id: uuid.UUID,
+@@ -652,19 +668,13 @@ def choose_cash(
+ ):
+     """The customer will pay the contractor in cash. The payment stays
+     'pending' until a contractor confirms the cash arrived (confirm-cash);
+-    nothing the customer's own app does can complete it. Refused once a
+-    Razorpay order exists: that order could still be paid online later, so
+-    the same quotation could end up settled twice."""
++    nothing the customer's own app does can complete it. Allowed even after
++    an online checkout was opened (the customer may change their mind). The
++    Razorpay order id is KEPT: if money is nevertheless captured on that
++    order, the webhook/verify path records it as an online payment - what
++    Razorpay actually captured is the truth - and a second settlement (cash
++    already confirmed) is logged as razorpay.double_settlement for a refund."""
+     payment = _own_pending_payment(db, payment_id, claims)
+-    if payment.razorpay_order_id:
+-        raise HTTPException(
+-            status_code=status.HTTP_409_CONFLICT,
+-            detail={
+-                "code": "ONLINE_ORDER_OPEN",
+-                "message": "An online payment is already open for this quotation. Finish it, "
+-                "or ask your contractor to take payment on a fresh request.",
+-            },
+-        )
+     payment.method = "cash"
+     db.commit()
+     db.refresh(payment)
+@@ -767,11 +777,6 @@ def verify_payment(
+             status_code=status.HTTP_403_FORBIDDEN,
+             detail={"code": "FORBIDDEN", "message": "You can only verify your own payments."},
+         )
+-    if payment.method == "cash":
+-        raise HTTPException(
+-            status_code=status.HTTP_409_CONFLICT,
+-            detail={"code": "PAYMENT_IS_CASH", "message": "This payment is set to cash."},
+-        )
+     if not payment.razorpay_order_id or payment.razorpay_order_id != payload.razorpay_order_id:
+         raise HTTPException(
+             status_code=status.HTTP_400_BAD_REQUEST,
+@@ -797,7 +802,12 @@ def verify_payment(
+     if payment.status != "completed":
+         payment.razorpay_payment_id = payload.razorpay_payment_id
+         payment.status = "completed"
++        # The signature proves Razorpay took the money, whatever the customer
++        # last selected (they may have switched to cash after opening checkout).
++        payment.method = "online"
+         _mark_completed(db, payment)
++    elif payment.method == "cash":
++        _log_double_settlement(payment, payload.razorpay_payment_id)
+     return _payment_to_response(payment)
+ 
+ 
+@@ -995,9 +1005,13 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
+     if event == "payment.captured":
+         if payment.status == "completed":
+             # Idempotent no-op - see this function's docstring. Still 200.
++            if payment.method == "cash":
++                _log_double_settlement(payment, razorpay_payment_id)
+             return {"status": "already_completed", "payment_id": payment.id}
+         payment.razorpay_payment_id = razorpay_payment_id
+         payment.status = "completed"
++        # Captured money wins over a later switch to cash (see choose_cash).
++        payment.method = "online"
+         db.commit()
+         db.refresh(payment)
+         events.payment_completed(
+@@ -1017,6 +1031,10 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
+         # write-once rule elsewhere in this platform.
+         if payment.status == "completed":
+             return {"status": "ignored_already_completed", "payment_id": payment.id}
++        # A failed attempt on an order the customer has since abandoned for
++        # cash must not close the cash payment they are now relying on.
++        if payment.method == "cash":
++            return {"status": "ignored_cash_selected", "payment_id": payment.id}
+         payment.razorpay_payment_id = razorpay_payment_id
+         payment.status = "failed"
+         db.commit()
+diff --git a/services/payments-data/tests/test_cash_and_verify.py b/services/payments-data/tests/test_cash_and_verify.py
+index c5ab5a1..a24eeee 100644
+--- a/services/payments-data/tests/test_cash_and_verify.py
++++ b/services/payments-data/tests/test_cash_and_verify.py
+@@ -3,6 +3,7 @@ client-side verify endpoint."""
+ 
+ import hashlib
+ import hmac
++import json
+ import uuid
+ from unittest.mock import patch
+ 
+@@ -107,12 +108,99 @@ def test_other_customer_cannot_choose_cash_for_my_payment(client):
+     assert _post(client, pid, "choose-cash", OTHER_CUST).status_code == 403
+ 
+ 
+-def test_cannot_choose_cash_once_an_online_order_exists(client):
++def test_can_choose_cash_after_an_online_order_exists(client):
+     pid = _new_payment(client)
+     _with_order(client, pid)
+     resp = _post(client, pid, "choose-cash", CUST_TOKEN)
+-    assert resp.status_code == 409
+-    assert resp.json()["error"]["code"] == "ONLINE_ORDER_OPEN"
++    assert resp.status_code == 200
++    assert resp.json()["method"] == "cash" and resp.json()["status"] == "pending"
++    # the order is kept so a capture that still happens can be recorded
++    assert resp.json()["razorpay_order_id"] == "order_abc"
++
++
++def test_switching_cash_to_online_again_reuses_the_same_order(client):
++    pid = _new_payment(client)
++    _with_order(client, pid)
++    _post(client, pid, "choose-cash", CUST_TOKEN)
++    assert _post(client, pid, "choose-online", CUST_TOKEN).json()["method"] == "online"
++    with patch("app.main.get_razorpay_config", return_value=CFG), patch(
++        "app.main.create_order"
++    ) as mk:
++        resp = _post(client, pid, "create-order", CUST_TOKEN)
++    assert resp.status_code == 200 and resp.json()["razorpay_order_id"] == "order_abc"
++    mk.assert_not_called()
++
++
++def _webhook(client, event, order_id, pay_id="pay_late"):
++    body = json.dumps(
++        {"event": event, "payload": {"payment": {"entity": {"id": pay_id, "order_id": order_id}}}}
++    ).encode()
++    with patch("app.main.verify_webhook_signature", return_value=None):
++        return client.post(
++            "/v1/payments/webhook", content=body, headers={"Content-Type": "application/json"}
++        )
++
++
++def test_late_failed_webhook_does_not_close_a_cash_payment(client):
++    pid = _new_payment(client)
++    _with_order(client, pid)
++    _post(client, pid, "choose-cash", CUST_TOKEN)
++
++    resp = _webhook(client, "payment.failed", "order_abc")
++
++    assert resp.json()["status"] == "ignored_cash_selected"
++    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
++    assert got["status"] == "pending" and got["method"] == "cash"
++
++
++def test_captured_webhook_after_switching_to_cash_records_an_online_payment(client):
++    pid = _new_payment(client)
++    _with_order(client, pid)
++    _post(client, pid, "choose-cash", CUST_TOKEN)
++
++    resp = _webhook(client, "payment.captured", "order_abc")
++
++    assert resp.json()["status"] == "completed"
++    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
++    assert got["status"] == "completed" and got["method"] == "online"
++
++
++def test_capture_after_cash_was_confirmed_changes_nothing_and_is_logged(client, caplog):
++    pid = _new_payment(client)
++    _with_order(client, pid)
++    _post(client, pid, "choose-cash", CUST_TOKEN)
++    _post(client, pid, "confirm-cash", CONTRACTOR)
++
++    with caplog.at_level("WARNING"):
++        resp = _webhook(client, "payment.captured", "order_abc")
++
++    assert resp.json()["status"] == "already_completed"
++    got = client.get(f"/v1/payments/{pid}", headers=_h(CUST_TOKEN)).json()
++    assert got["method"] == "cash" and got.get("razorpay_payment_id") is None
++    assert "razorpay.double_settlement" in caplog.text
++
++
++def test_verify_with_valid_signature_completes_a_payment_switched_to_cash(client):
++    pid = _new_payment(client)
++    _with_order(client, pid)
++    _post(client, pid, "choose-cash", CUST_TOKEN)
++    body = {
++        "razorpay_order_id": "order_abc",
++        "razorpay_payment_id": "pay_1",
++        "razorpay_signature": _sig("order_abc", "pay_1"),
++    }
++    with patch("app.main.get_razorpay_config", return_value=CFG), patch(
++        "app.gateway.razorpay_client.get_razorpay_config", return_value=CFG
++    ):
++        resp = _post(client, pid, "verify", CUST_TOKEN, json=body)
++    assert resp.status_code == 200, resp.text
++    assert resp.json()["status"] == "completed" and resp.json()["method"] == "online"
++
++
++def test_resource_owner_cannot_list_payments(client):
++    _new_payment(client)
++    resp = client.get("/v1/payments", headers=_h(OWNER))
++    assert resp.status_code == 403
+ 
+ 
+ def test_cash_payment_cannot_open_a_razorpay_order(client):
+diff --git a/services/quotation/app/main.py b/services/quotation/app/main.py
+index 3cd9b7e..5bd28ab 100644
+--- a/services/quotation/app/main.py
++++ b/services/quotation/app/main.py
+@@ -478,11 +478,20 @@ def edit_quotation(
+             detail={"code": "FORBIDDEN", "message": "You can only edit your own quotations."},
+         )
+ 
++    # Editing an old version would mint a second row with the same version
++    # number and leave two competing drafts for the customer.
++    _require_latest_version(db, existing)
++
+     rule = _get_rule(db, existing.contractor_id, existing.job_type)
+     minimum_job_charge = to_money(rule.minimum_job_charge) if rule else Decimal("0")
+ 
+     if payload.line_items is not None:
+-        new_line_items = [{"label": li.label, "amount": li.amount} for li in payload.line_items]
++        # float, not Decimal: the JSON column cannot serialise a Decimal (an
++        # unhandled 500 here is what the app reported as "service temporarily
++        # unavailable"). Same conversion generate_quotation uses.
++        new_line_items = [
++            {"label": li.label, "amount": float(li.amount)} for li in payload.line_items
++        ]
+         new_subtotal = to_money(
+             sum((Decimal(str(li.amount)) for li in payload.line_items), Decimal("0"))
+         )
+diff --git a/services/quotation/tests/test_quotations.py b/services/quotation/tests/test_quotations.py
+index ff05ad2..d68ea42 100644
+--- a/services/quotation/tests/test_quotations.py
++++ b/services/quotation/tests/test_quotations.py
+@@ -436,3 +436,46 @@ def test_generate_quotation_falls_back_to_flat_assumption_without_service_area_m
+     assert body["estimated_depth_range"]["confidence"] == "low"
+     assert body["estimated_depth_range"]["min_ft"] == 250
+     assert body["estimated_depth_range"]["max_ft"] == 350
++
++
++def test_editing_line_items_creates_new_version(client):
++    # The mobile app always sends line_items. Amounts arrive as Decimal and the
++    # JSON column cannot store one, so this used to be an unhandled 500
++    # ("service temporarily unavailable" in the app).
++    token = _setup_rule(client, "contractor-edit-items")
++    create_resp = client.post(
++        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
++    )
++    original = create_resp.json()
++    items = [
++        {"label": item["label"], "amount": float(item["amount"]) + 100}
++        for item in original["line_items"]
++    ]
++
++    edit_resp = client.patch(
++        f"/v1/quotations/{original['quotation_id']}",
++        json={"line_items": items, "total_estimate": 96000.5},
++        headers={"Authorization": f"Bearer {token}"},
++    )
++
++    assert edit_resp.status_code == 201, edit_resp.text
++    body = edit_resp.json()
++    assert body["version"] == 2
++    assert Decimal(body["total_estimate"]) == Decimal("96000.50")
++    assert [float(i["amount"]) for i in body["line_items"]] == [i["amount"] for i in items]
++
++
++def test_only_the_latest_version_can_be_edited(client_factory):
++    from tests.test_approval_integrity import _auth, _revise, _v1
++
++    c, contractor, _, v1 = _v1(client_factory, "edit-old")
++    _revise(c, contractor, v1["quotation_id"])
++
++    resp = c.patch(
++        f"/v1/quotations/{v1['quotation_id']}",
++        json={"total_estimate": 1000},
++        headers=_auth(contractor),
++    )
++
++    assert resp.status_code == 409
++    assert resp.json()["error"]["code"] == "QUOTATION_SUPERSEDED"
+-- 
+2.43.0
+
+
+From a16003602fec28637366c0315c7eead9dec453ee Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 11:28:15 +0530
+Subject: [PATCH 2/6] resource-network: free a rig after use
+
+- POST /v1/bookings/{id}/release: the contractor who booked it or the rig's owner ends an accepted booking (status completed) and the rig is available again. Idempotent; 403 for anyone else; 409 for a booking that was never accepted.
+- an owner setting a rig back to available now also ends its accepted booking. Before, the booking kept blocking every new request with RESOURCE_ALREADY_REQUESTED even though the rig showed available.
+- job.completed subscriber (app/job_consumer.py, same shape as platform-spine's payment consumer) frees the rigs booked for a job automatically. Redis pub/sub is lossy, so the manual release stays as the fallback.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ services/resource-network/app/job_consumer.py |  96 ++++++++++++
+ services/resource-network/app/main.py         |  80 +++++++++-
+ services/resource-network/app/models.py       |   5 +-
+ services/resource-network/tests/conftest.py   |   1 +
+ .../resource-network/tests/test_release.py    | 145 ++++++++++++++++++
+ 5 files changed, 325 insertions(+), 2 deletions(-)
+ create mode 100644 services/resource-network/app/job_consumer.py
+ create mode 100644 services/resource-network/tests/test_release.py
+
+diff --git a/services/resource-network/app/job_consumer.py b/services/resource-network/app/job_consumer.py
+new file mode 100644
+index 0000000..45fc8f1
+--- /dev/null
++++ b/services/resource-network/app/job_consumer.py
+@@ -0,0 +1,96 @@
++"""
++Event consumer: when a job is completed (job.completed, published by
++platform-spine once the actual depth and cost are saved) the rigs booked for
++that job are freed, so the owner's fleet shows them as available again and
++they can be booked by someone else.
++
++Same shape as platform-spine's payment_consumer, kept just as small: one
++background thread, started from main.py's lifespan, that logs and carries on
++when Redis is down or one message is bad. Redis pub/sub does not replay, so a
++dropped event is not fatal - POST /v1/bookings/{id}/release (contractor or
++owner) is the manual way to free a rig, and it is always available.
++"""
++import json
++import logging
++import os
++import threading
++import time
++
++from app import models
++from app.database import SessionLocal
++
++logger = logging.getLogger(__name__)
++
++REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
++_subscriber_thread = None
++
++
++def handle_job_completed(payload: dict, db=None) -> int:
++    """Free every accepted booking made for payload['job_id']. Returns how many
++    were released. `db` is injectable for tests; production opens its own."""
++    job_id = payload.get("job_id") if isinstance(payload, dict) else None
++    if not job_id:
++        logger.warning("job.completed without a job_id, ignoring: %s", payload)
++        return 0
++
++    from app.main import release_booking  # late: app.main imports this module
++
++    def work(session) -> int:
++        bookings = (
++            session.query(models.BookingRequest)
++            .filter(
++                models.BookingRequest.job_id == str(job_id),
++                models.BookingRequest.status == "accepted",
++            )
++            .all()
++        )
++        for booking in bookings:
++            release_booking(session, booking)
++        session.commit()
++        return len(bookings)
++
++    if db is not None:
++        released = work(db)
++    else:
++        session = SessionLocal()
++        try:
++            released = work(session)
++        finally:
++            session.close()
++    if released:
++        logger.info("job_id=%s completed: released %s booking(s)", job_id, released)
++    return released
++
++
++def _listen_loop():
++    import redis
++
++    while True:
++        try:
++            pubsub = redis.Redis.from_url(REDIS_URL, decode_responses=True).pubsub()
++            pubsub.subscribe("job.completed")
++            logger.info("subscribed to job.completed")
++            for message in pubsub.listen():
++                if message["type"] != "message":
++                    continue
++                try:
++                    payload = json.loads(message["data"])
++                except (json.JSONDecodeError, TypeError) as exc:
++                    logger.warning("job.completed: could not parse message, dropping: %s", exc)
++                    continue
++                try:
++                    handle_job_completed(payload)
++                except Exception:
++                    logger.exception("error handling job.completed event: %s", payload)
++        except Exception:
++            logger.exception("job.completed subscriber loop crashed, retrying")
++            time.sleep(5)
++
++
++def start():
++    """Idempotent: calling it twice does not start a second thread."""
++    global _subscriber_thread
++    if _subscriber_thread is not None:
++        return
++    _subscriber_thread = threading.Thread(target=_listen_loop, daemon=True)
++    _subscriber_thread.start()
+diff --git a/services/resource-network/app/main.py b/services/resource-network/app/main.py
+index ddbd098..cde27ad 100644
+--- a/services/resource-network/app/main.py
++++ b/services/resource-network/app/main.py
+@@ -2,6 +2,7 @@ import logging
+ import os
+ import time
+ import uuid
++from contextlib import asynccontextmanager
+ from datetime import datetime, timezone
+ 
+ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+@@ -13,7 +14,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
+ from sqlalchemy import text
+ from sqlalchemy.orm import Session
+ 
+-from app import models, schemas
++from app import job_consumer, models, schemas
+ from app.database import get_db
+ from app.deps import get_current_claims, require_role
+ from app.geo import haversine_km
+@@ -23,7 +24,16 @@ from app.logging_config import configure_logging
+ configure_logging()
+ logger = logging.getLogger(__name__)
+ 
++@asynccontextmanager
++async def _lifespan(_app: FastAPI):
++    # Started here, not at import time, so importing app.main in tests never
++    # spins up a thread or a Redis connection. See app/job_consumer.py.
++    job_consumer.start()
++    yield
++
++
+ app = FastAPI(
++    lifespan=_lifespan,
+     title="resource-network",
+     version="0.1.0",
+     description="Resource Matching Engine, Inventory (rig/equipment/labour), Document/Media",
+@@ -278,6 +288,18 @@ def update_resource(
+ 
+     if payload.status is not None:
+         resource.status = payload.status
++        if payload.status == "available":
++            # Making a rig available again ends any accepted booking on it;
++            # otherwise that booking would go on blocking new requests.
++            for accepted in (
++                db.query(models.BookingRequest)
++                .filter(
++                    models.BookingRequest.resource_id == resource.id,
++                    models.BookingRequest.status == "accepted",
++                )
++                .all()
++            ):
++                accepted.status = "completed"
+     if payload.name is not None:
+         resource.name = payload.name
+     if payload.notes is not None:
+@@ -434,6 +456,17 @@ def list_bookings(
+     return [_booking_to_response(b) for b in query.all()]
+ 
+ 
++def release_booking(db: Session, booking: models.BookingRequest) -> None:
++    """End an accepted booking and free its rig. Without this a rig stayed
++    'reserved' for ever and, worse, the accepted booking itself kept blocking
++    every new request for it (RESOURCE_ALREADY_REQUESTED) even after the owner
++    flipped the rig back to available by hand. Caller commits."""
++    booking.status = "completed"
++    resource = db.query(models.Resource).filter(models.Resource.id == booking.resource_id).first()
++    if resource is not None:
++        resource.status = "available"
++
++
+ def _respond_to_booking(
+     booking_id: uuid.UUID, new_status: str, db: Session, claims: dict
+ ) -> models.BookingRequest:
+@@ -514,6 +547,51 @@ def reject_booking(
+     return _booking_to_response(booking)
+ 
+ 
++@app.post("/v1/bookings/{booking_id}/release", response_model=schemas.BookingRequestResponse)
++def release_booking_endpoint(
++    booking_id: uuid.UUID,
++    db: Session = Depends(get_db),
++    claims: dict = Depends(require_role("resource_owner", "contractor")),
++):
++    """The rig is done with: either side of an accepted booking (the contractor
++    who booked it, or the owner of the rig) can free it. This is the manual path;
++    completing the job (job.completed) frees it automatically - see
++    app/job_consumer.py. Repeating the call on a finished booking is harmless."""
++    booking = (
++        db.query(models.BookingRequest).filter(models.BookingRequest.id == str(booking_id)).first()
++    )
++    if not booking:
++        raise HTTPException(
++            status_code=status.HTTP_404_NOT_FOUND,
++            detail={
++                "code": "BOOKING_NOT_FOUND",
++                "message": "No booking request with this ID exists.",
++            },
++        )
++    party = booking.owner_id if claims["role"] == "resource_owner" else booking.contractor_id
++    if party != claims["sub"]:
++        raise HTTPException(
++            status_code=status.HTTP_403_FORBIDDEN,
++            detail={"code": "FORBIDDEN", "message": "You can only release your own bookings."},
++        )
++    if booking.status == "completed":
++        return _booking_to_response(booking)
++    if booking.status != "accepted":
++        raise HTTPException(
++            status_code=status.HTTP_409_CONFLICT,
++            detail={
++                "code": "BOOKING_NOT_ACTIVE",
++                "message": (
++                    f"Only an accepted booking can be released; this one is '{booking.status}'."
++                ),
++            },
++        )
++    release_booking(db, booking)
++    db.commit()
++    db.refresh(booking)
++    return _booking_to_response(booking)
++
++
+ # ---------- service areas (pilot water-depth reference data) ----------
+ 
+ 
+diff --git a/services/resource-network/app/models.py b/services/resource-network/app/models.py
+index d14d197..b20ac5a 100644
+--- a/services/resource-network/app/models.py
++++ b/services/resource-network/app/models.py
+@@ -13,7 +13,10 @@ RESOURCE_TYPES = ("rig", "equipment", "labour")
+ # resource itself doesn't track who requested it, the booking table does.
+ RESOURCE_STATUSES = ("available", "reserved", "assigned", "in_use", "returned")
+ 
+-BOOKING_STATUSES = ("pending", "accepted", "rejected", "cancelled")
++# "completed": the accepted booking is over and the rig is free again (see
++# release_booking in main.py). Postgres stores this column as plain VARCHAR
++# (migration 0002), so adding a value here needs no migration.
++BOOKING_STATUSES = ("pending", "accepted", "rejected", "cancelled", "completed")
+ 
+ # Same MONEY convention as quotation/payments-data/platform-spine (Bug 2 fix).
+ MONEY = Numeric(precision=12, scale=2)
+diff --git a/services/resource-network/tests/conftest.py b/services/resource-network/tests/conftest.py
+index 71579df..aab6570 100644
+--- a/services/resource-network/tests/conftest.py
++++ b/services/resource-network/tests/conftest.py
+@@ -51,6 +51,7 @@ def client():
+ 
+     app.dependency_overrides[get_db] = override_get_db
+     with TestClient(app) as c:
++        c.test_session_local = testing_session_local
+         yield c
+     app.dependency_overrides.clear()
+     Base.metadata.drop_all(bind=engine)
+diff --git a/services/resource-network/tests/test_release.py b/services/resource-network/tests/test_release.py
+new file mode 100644
+index 0000000..00bad1b
+--- /dev/null
++++ b/services/resource-network/tests/test_release.py
+@@ -0,0 +1,145 @@
++"""Freeing a rig once its job is done: manually (contractor or owner), by the
++owner setting it available, and automatically on job.completed."""
++import uuid
++
++from app.job_consumer import handle_job_completed
++
++from tests.conftest import make_token
++
++OWNER = make_token("rel-owner", "resource_owner")
++OTHER_OWNER = make_token("rel-owner-2", "resource_owner")
++CONTRACTOR = make_token("rel-contractor", "contractor")
++OTHER_CONTRACTOR = make_token("rel-contractor-2", "contractor")
++JOB_ID = str(uuid.uuid4())
++
++
++def _h(token):
++    return {"Authorization": f"Bearer {token}"}
++
++
++def _accepted_booking(client, job_id=JOB_ID):
++    rig = client.post(
++        "/v1/resources",
++        json={"resource_type": "rig", "name": "Rig", "lat": 9.9, "lng": 78.1},
++        headers=_h(OWNER),
++    ).json()
++    booking = client.post(
++        "/v1/bookings",
++        json={"resource_id": rig["resource_id"], "job_id": job_id},
++        headers=_h(CONTRACTOR),
++    ).json()
++    accepted = client.post(f"/v1/bookings/{booking['booking_id']}/accept", headers=_h(OWNER))
++    assert accepted.status_code == 200
++    return rig["resource_id"], booking["booking_id"]
++
++
++def _rig_status(client, rig_id):
++    return client.get(f"/v1/resources/{rig_id}", headers=_h(OWNER)).json()["status"]
++
++
++def test_contractor_can_release_an_accepted_booking(client):
++    rig_id, booking_id = _accepted_booking(client)
++    assert _rig_status(client, rig_id) == "reserved"
++
++    resp = client.post(f"/v1/bookings/{booking_id}/release", headers=_h(CONTRACTOR))
++
++    assert resp.status_code == 200 and resp.json()["status"] == "completed"
++    assert _rig_status(client, rig_id) == "available"
++
++
++def test_owner_can_release_an_accepted_booking(client):
++    rig_id, booking_id = _accepted_booking(client)
++    resp = client.post(f"/v1/bookings/{booking_id}/release", headers=_h(OWNER))
++    assert resp.status_code == 200
++    assert _rig_status(client, rig_id) == "available"
++
++
++def test_a_freed_rig_can_be_booked_again(client):
++    rig_id, booking_id = _accepted_booking(client)
++    client.post(f"/v1/bookings/{booking_id}/release", headers=_h(CONTRACTOR))
++
++    again = client.post(
++        "/v1/bookings", json={"resource_id": rig_id}, headers=_h(OTHER_CONTRACTOR)
++    )
++    assert again.status_code == 201
++
++
++def test_release_twice_is_harmless(client):
++    _, booking_id = _accepted_booking(client)
++    client.post(f"/v1/bookings/{booking_id}/release", headers=_h(CONTRACTOR))
++    again = client.post(f"/v1/bookings/{booking_id}/release", headers=_h(CONTRACTOR))
++    assert again.status_code == 200 and again.json()["status"] == "completed"
++
++
++def test_someone_elses_booking_cannot_be_released(client):
++    _, booking_id = _accepted_booking(client)
++    assert (
++        client.post(f"/v1/bookings/{booking_id}/release", headers=_h(OTHER_CONTRACTOR)).status_code
++        == 403
++    )
++    assert (
++        client.post(f"/v1/bookings/{booking_id}/release", headers=_h(OTHER_OWNER)).status_code
++        == 403
++    )
++
++
++def test_customer_cannot_release(client):
++    _, booking_id = _accepted_booking(client)
++    resp = client.post(
++        f"/v1/bookings/{booking_id}/release", headers=_h(make_token("rel-cust", "customer"))
++    )
++    assert resp.status_code == 403
++
++
++def test_pending_booking_cannot_be_released(client):
++    rig = client.post(
++        "/v1/resources",
++        json={"resource_type": "rig", "name": "Rig", "lat": 9.9, "lng": 78.1},
++        headers=_h(OWNER),
++    ).json()
++    booking = client.post(
++        "/v1/bookings", json={"resource_id": rig["resource_id"]}, headers=_h(CONTRACTOR)
++    ).json()
++    resp = client.post(f"/v1/bookings/{booking['booking_id']}/release", headers=_h(CONTRACTOR))
++    assert resp.status_code == 409 and resp.json()["error"]["code"] == "BOOKING_NOT_ACTIVE"
++
++
++def test_owner_setting_the_rig_available_also_ends_the_booking(client):
++    # Before: the rig showed available but the accepted booking still blocked
++    # every new request with RESOURCE_ALREADY_REQUESTED.
++    rig_id, booking_id = _accepted_booking(client)
++    client.patch(f"/v1/resources/{rig_id}", json={"status": "available"}, headers=_h(OWNER))
++
++    bookings = client.get("/v1/bookings", headers=_h(OWNER)).json()
++    assert [b["status"] for b in bookings if b["booking_id"] == booking_id] == ["completed"]
++    again = client.post("/v1/bookings", json={"resource_id": rig_id}, headers=_h(OTHER_CONTRACTOR))
++    assert again.status_code == 201
++
++
++def test_job_completed_event_frees_the_rig_for_that_job_only(client):
++    rig_a, booking_a = _accepted_booking(client, job_id=JOB_ID)
++    other_job = str(uuid.uuid4())
++    rig_b, _ = _accepted_booking(client, job_id=other_job)
++
++    db = client.test_session_local()
++    try:
++        released = handle_job_completed({"job_id": JOB_ID}, db=db)
++    finally:
++        db.close()
++
++    assert released == 1
++    assert _rig_status(client, rig_a) == "available"
++    assert _rig_status(client, rig_b) == "reserved"
++
++
++def test_job_completed_event_is_idempotent_and_tolerates_junk(client):
++    rig_id, _ = _accepted_booking(client)
++    db = client.test_session_local()
++    try:
++        assert handle_job_completed({"job_id": JOB_ID}, db=db) == 1
++        assert handle_job_completed({"job_id": JOB_ID}, db=db) == 0
++        assert handle_job_completed({}, db=db) == 0
++        assert handle_job_completed("nonsense", db=db) == 0
++    finally:
++        db.close()
++    assert _rig_status(client, rig_id) == "available"
+-- 
+2.43.0
+
+
+From 17d813a42057b1b210f2b77a5b376154742e5419 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 11:31:33 +0530
+Subject: [PATCH 3/6] contracts: admin API, booking release, cash-after-order,
+ quotation edit 409
+
+Contract-only (plus the gateway rule that routes /v1/admin to platform-spine). Implemented in the neighbouring commits; check_contract.py is OK for all four services.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ docker-compose.prod.yml                       |  2 +-
+ packages/contracts/openapi/payments-data.yaml |  5 +-
+ .../contracts/openapi/platform-spine.yaml     | 56 ++++++++++++++++++-
+ packages/contracts/openapi/quotation.yaml     |  2 +
+ .../contracts/openapi/resource-network.yaml   | 27 ++++++++-
+ 5 files changed, 88 insertions(+), 4 deletions(-)
+
+diff --git a/docker-compose.prod.yml b/docker-compose.prod.yml
+index 28a879c..698ef2a 100644
+--- a/docker-compose.prod.yml
++++ b/docker-compose.prod.yml
+@@ -247,7 +247,7 @@ services:
+       # PathPrefix, not StripPrefix - main.py's own routes already start
+       # with /v1/, and platform-spine has no other prefix to strip (this
+       # is genuinely the service's real path, not a gateway-only alias).
+-      - "traefik.http.routers.platform-spine.rule=PathPrefix(`/v1/auth`) || PathPrefix(`/v1/jobs`)"
++      - "traefik.http.routers.platform-spine.rule=PathPrefix(`/v1/auth`) || PathPrefix(`/v1/jobs`) || PathPrefix(`/v1/admin`)"
+       - "traefik.http.services.platform-spine.loadbalancer.server.port=8000"
+ 
+   quotation:
+diff --git a/packages/contracts/openapi/payments-data.yaml b/packages/contracts/openapi/payments-data.yaml
+index 06b7edb..7fee2fb 100644
+--- a/packages/contracts/openapi/payments-data.yaml
++++ b/packages/contracts/openapi/payments-data.yaml
+@@ -190,13 +190,16 @@ paths:
+         The customer will pay the contractor in cash. The payment stays
+         'pending' (method becomes 'cash') until a contractor confirms the
+         cash arrived. Customer only, and only the payment's own customer.
++        Allowed after an online checkout was opened: the Razorpay order is kept,
++        and if money is captured on it anyway the payment completes as 'online'
++        (a second capture after cash was confirmed is logged for refund).
+       parameters:
+         - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
+       responses:
+         '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
+         '403': { description: Not the owning customer }
+         '404': { description: Payment not found }
+-        '409': { description: "Payment is not pending (PAYMENT_NOT_PENDING) or an online Razorpay order is already open (ONLINE_ORDER_OPEN)" }
++        '409': { description: "Payment is not pending (PAYMENT_NOT_PENDING)" }
+   /v1/payments/{payment_id}/choose-online:
+     post:
+       summary: Change back from cash to online before a contractor has confirmed any cash. Customer only (own payment).
+diff --git a/packages/contracts/openapi/platform-spine.yaml b/packages/contracts/openapi/platform-spine.yaml
+index 9d6287f..b78fa55 100644
+--- a/packages/contracts/openapi/platform-spine.yaml
++++ b/packages/contracts/openapi/platform-spine.yaml
+@@ -33,7 +33,7 @@ paths:
+         '403':
+           description: CONTRACTOR_REGISTRATION_CLOSED - public sign-up for the contractor role is disabled (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0); an operator creates these accounts
+         '422':
+-          description: Validation error (including a role that cannot be self-registered, e.g. admin, or a password over 72 bytes)
++          description: Validation error (including a malformed email address, a role that cannot be self-registered, e.g. admin, or a password over 72 bytes). Emails are stored and compared lower-case.
+         '429':
+           description: Too many registration attempts from this client; see Retry-After
+   /v1/auth/google:
+@@ -184,6 +184,52 @@ paths:
+                 type: array
+                 items:
+                   $ref: '#/components/schemas/Job'
++  /v1/admin/contractors:
++    post:
++      summary: |
++        Administrator adds a contractor account. Works even when public
++        contractor sign-up is closed (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0).
++        The password is chosen by the admin and handed over out of band; it is
++        never returned. Admin only.
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              type: object
++              additionalProperties: false
++              required: [email, password]
++              properties:
++                email: { type: string, format: email }
++                password: { type: string, minLength: 8, maxLength: 128, description: "at most 72 bytes (bcrypt)" }
++                phone: { type: string, nullable: true, description: "10-digit Indian mobile, optional +91" }
++      responses:
++        '201':
++          description: Contractor created
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/UserSummary' }
++        '401': { description: Missing or invalid token }
++        '403': { description: Caller is not an admin }
++        '409': { description: EMAIL_TAKEN - an account with this email already exists (case-insensitive) }
++        '422': { description: Malformed email, weak password, bad phone, or an unexpected field such as role }
++  /v1/admin/users:
++    get:
++      summary: Every account, newest first (admin only). Never includes password hashes.
++      parameters:
++        - { name: role, in: query, required: false, schema: { type: string, enum: [customer, contractor, admin, resource_owner] } }
++        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200 } }
++        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
++      responses:
++        '200':
++          description: Accounts
++          content:
++            application/json:
++              schema:
++                type: array
++                items: { $ref: '#/components/schemas/UserSummary' }
++        '403': { description: Caller is not an admin }
++        '422': { description: Unknown role filter }
+   /v1/jobs/{job_id}:
+     get:
+       summary: Get a single job's current state
+@@ -302,6 +348,14 @@ paths:
+ 
+ components:
+   schemas:
++    UserSummary:
++      type: object
++      properties:
++        user_id: { type: string, format: uuid }
++        email: { type: string, format: email }
++        phone: { type: string, nullable: true }
++        role: { type: string, enum: [customer, contractor, admin, resource_owner] }
++        created_at: { type: string, format: date-time, nullable: true }
+     JobCompletionRecord:
+       type: object
+       description: |
+diff --git a/packages/contracts/openapi/quotation.yaml b/packages/contracts/openapi/quotation.yaml
+index 2df9d9d..514ed95 100644
+--- a/packages/contracts/openapi/quotation.yaml
++++ b/packages/contracts/openapi/quotation.yaml
+@@ -109,6 +109,8 @@ paths:
+           description: Only the owning contractor may edit
+         '404':
+           description: Quotation not found
++        '409':
++          description: QUOTATION_SUPERSEDED - only the latest version of a job's quotation can be edited
+   /v1/quotations/job/{job_id}/latest:
+     get:
+       summary: Get the latest quotation version for a job
+diff --git a/packages/contracts/openapi/resource-network.yaml b/packages/contracts/openapi/resource-network.yaml
+index 696e3d2..2f8c1b7 100644
+--- a/packages/contracts/openapi/resource-network.yaml
++++ b/packages/contracts/openapi/resource-network.yaml
+@@ -296,6 +296,31 @@ paths:
+         '409':
+           description: Already resolved, or resource no longer available
+ 
++  /v1/bookings/{booking_id}/release:
++    post:
++      summary: |
++        The rig is done with: the contractor who booked it, or its owner, ends an
++        accepted booking (status becomes 'completed') and the rig is 'available'
++        again. Completing the job (job.completed) does the same automatically;
++        this is the manual path. Repeating it on a finished booking is harmless.
++      parameters:
++        - name: booking_id
++          in: path
++          required: true
++          schema: { type: string, format: uuid }
++      responses:
++        '200':
++          description: Booking completed, rig available
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/BookingRequest'
++        '403':
++          description: Not the contractor who booked it, nor the rig's owner
++        '404':
++          description: Booking not found
++        '409':
++          description: BOOKING_NOT_ACTIVE - only an accepted booking can be released
+   /v1/bookings/{booking_id}/reject:
+     post:
+       summary: Owner rejects a pending request on their resource.
+@@ -328,7 +353,7 @@ components:
+         owner_id: { type: string, format: uuid }
+         contractor_id: { type: string, format: uuid }
+         job_id: { type: string, format: uuid, nullable: true }
+-        status: { type: string, enum: [pending, accepted, rejected, cancelled] }
++        status: { type: string, enum: [pending, accepted, rejected, cancelled, completed] }
+         message: { type: string, nullable: true }
+         created_at: { type: string, format: date-time }
+         responded_at: { type: string, format: date-time, nullable: true }
+-- 
+2.43.0
+
+
+From bf5de6f492e445525b243d8deb9e6563d613fce3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 11:31:33 +0530
+Subject: [PATCH 4/6] platform-spine, quotation: admin adds contractors;
+ validate and normalise emails; stop leaking jobs and quotations to rig owners
+
+platform-spine
+- POST /v1/admin/contractors (admin only) creates a contractor; works when public contractor sign-up is closed. GET /v1/admin/users lists accounts (no hashes), optional role filter.
+- emails are lower-cased on register/login/admin-create; lookups compare lower-cased so mixed-case accounts created earlier still sign in; 'Asha@x.com' and 'asha@x.com' are no longer two accounts
+- GET /v1/jobs, /v1/jobs/{id}, /v1/jobs/{id}/completion/result refuse resource_owner (they used to return every customer's job, location and phone)
+
+quotation
+- quotation reads refuse any role outside customer/contractor/admin
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ services/platform-spine/app/main.py         |  90 +++++++++-
+ services/platform-spine/app/schemas.py      |  69 ++++++--
+ services/platform-spine/tests/test_admin.py | 183 ++++++++++++++++++++
+ services/quotation/app/main.py              |   8 +-
+ services/quotation/tests/test_quotations.py |  19 ++
+ 5 files changed, 344 insertions(+), 25 deletions(-)
+ create mode 100644 services/platform-spine/tests/test_admin.py
+
+diff --git a/services/platform-spine/app/main.py b/services/platform-spine/app/main.py
+index 62e3f9f..dd61318 100644
+--- a/services/platform-spine/app/main.py
++++ b/services/platform-spine/app/main.py
+@@ -26,7 +26,7 @@ from app import (
+     schemas,
+ )
+ from app.database import get_db
+-from app.deps import get_current_claims, require_role
++from app.deps import require_role
+ from app.hardening import BodySizeLimitMiddleware, api_docs_kwargs, metrics_guard
+ from app.job_state_machine import InvalidTransitionError, validate_transition
+ from app.logging_config import configure_logging
+@@ -207,6 +207,10 @@ def readyz(db: Session = Depends(get_db)):
+ # ---------- auth (FR-AUTH-01 .. FR-AUTH-04) ----------
+ 
+ 
++def _user_by_email(db: Session, email: str) -> models.User | None:
++    return db.query(models.User).filter(func.lower(models.User.email) == email.lower()).first()
++
++
+ def _require_role_open_for_signup(role: str) -> None:
+     if role == "contractor" and os.getenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "1") == "0":
+         raise HTTPException(
+@@ -230,7 +234,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
+     # sign-up for that role must be closed: ALLOW_PUBLIC_CONTRACTOR_REGISTRATION=0.
+     # New contractors are then created by an operator: python -m app.bootstrap create-user.
+     _require_role_open_for_signup(payload.role)
+-    existing = db.query(models.User).filter(models.User.email == payload.email).first()
++    existing = _user_by_email(db, payload.email)
+     if existing:
+         raise HTTPException(
+             status_code=status.HTTP_409_CONFLICT,
+@@ -262,7 +266,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
+     dependencies=[Depends(login_rate_limit)],
+ )
+ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+-    user = db.query(models.User).filter(models.User.email == payload.email).first()
++    user = _user_by_email(db, payload.email)
+     # Always spend one bcrypt check, even for an email with no account. Without
+     # this an unknown email answered in ~1 ms and a known one in ~280 ms, which
+     # tells an attacker exactly which emails are registered.
+@@ -389,6 +393,80 @@ def google_sign_in(payload: schemas.GoogleLoginRequest, db: Session = Depends(ge
+ # ---------- jobs (FR-JOB-01 .. FR-JOB-05) ----------
+ 
+ 
++def _user_to_summary(user: models.User) -> schemas.UserSummary:
++    return schemas.UserSummary(
++        user_id=user.id,
++        email=user.email,
++        phone=user.phone,
++        role=user.role,
++        created_at=user.created_at,
++    )
++
++
++@app.post(
++    "/v1/admin/contractors",
++    response_model=schemas.UserSummary,
++    status_code=201,
++)
++def admin_create_contractor(
++    payload: schemas.AdminCreateContractorRequest,
++    db: Session = Depends(get_db),
++    claims: dict = Depends(require_role("admin")),
++):
++    """An administrator adds a contractor. Works whether or not public
++    contractor sign-up is open (ALLOW_PUBLIC_CONTRACTOR_REGISTRATION), which is
++    the point: once it is closed this is how new contractors get in. The
++    password is set by the admin and handed to the contractor out of band; it
++    is never returned."""
++    if _user_by_email(db, payload.email):
++        raise HTTPException(
++            status_code=status.HTTP_409_CONFLICT,
++            detail={"code": "EMAIL_TAKEN", "message": "An account with this email already exists."},
++        )
++    user = models.User(
++        email=payload.email,
++        phone=payload.phone,
++        password_hash=hash_password(payload.password),
++        role="contractor",
++    )
++    db.add(user)
++    try:
++        db.commit()
++    except IntegrityError:
++        db.rollback()
++        raise HTTPException(
++            status_code=status.HTTP_409_CONFLICT,
++            detail={"code": "EMAIL_TAKEN", "message": "An account with this email already exists."},
++        )
++    db.refresh(user)
++    logger.info("admin.contractor_created admin=%s user_id=%s", claims["sub"], user.id)
++    return _user_to_summary(user)
++
++
++@app.get("/v1/admin/users", response_model=list[schemas.UserSummary])
++def admin_list_users(
++    role: str | None = None,
++    limit: int | None = Query(default=None, ge=1, le=200),
++    offset: int = Query(default=0, ge=0),
++    db: Session = Depends(get_db),
++    claims: dict = Depends(require_role("admin")),
++):
++    """Every account, newest first, optionally one role. Never includes
++    password hashes."""
++    if role is not None and role not in models.ROLES:
++        raise HTTPException(
++            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++            detail={"code": "VALIDATION_ERROR", "message": f"role must be one of {models.ROLES}"},
++        )
++    query = db.query(models.User)
++    if role is not None:
++        query = query.filter(models.User.role == role)
++    query = query.order_by(models.User.created_at.desc())
++    if limit is not None:
++        query = query.offset(offset).limit(limit)
++    return [_user_to_summary(u) for u in query.all()]
++
++
+ def _job_to_response(job: models.Job) -> schemas.JobResponse:
+     return schemas.JobResponse(
+         job_id=job.id,
+@@ -468,7 +546,7 @@ def create_walk_in_job(
+ @app.get("/v1/jobs", response_model=list[schemas.JobResponse])
+ def list_jobs(
+     db: Session = Depends(get_db),
+-    claims: dict = Depends(get_current_claims),
++    claims: dict = Depends(require_role("customer", "contractor", "admin")),
+     limit: int | None = Query(
+         default=None,
+         ge=1,
+@@ -501,7 +579,7 @@ def list_jobs(
+ def get_job(
+     job_id: uuid.UUID,
+     db: Session = Depends(get_db),
+-    claims: dict = Depends(get_current_claims),
++    claims: dict = Depends(require_role("customer", "contractor", "admin")),
+ ):
+     job = db.query(models.Job).filter(models.Job.id == str(job_id)).first()
+     if not job:
+@@ -758,7 +836,7 @@ def log_job_completion(
+ def get_job_completion(
+     job_id: uuid.UUID,
+     db: Session = Depends(get_db),
+-    claims: dict = Depends(get_current_claims),
++    claims: dict = Depends(require_role("customer", "contractor", "admin")),
+ ):
+     """Read completion record and variance (FR-TRACK-04). Customers can
+     read their own job's record; contractor/admin can read any."""
+diff --git a/services/platform-spine/app/schemas.py b/services/platform-spine/app/schemas.py
+index fedf783..58d519f 100644
+--- a/services/platform-spine/app/schemas.py
++++ b/services/platform-spine/app/schemas.py
+@@ -8,18 +8,39 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
+ from app.models import JOB_STATUSES, PUBLIC_ROLES
+ 
+ 
++def _lowercase_email(v: str) -> str:
++    # One account per address however it was typed: "Asha@X.com" and
++    # "asha@x.com" used to be two different accounts. Lookups also compare
++    # lower-cased, so accounts stored before this still match.
++    return v.strip().lower()
++
++
++def _password_fits_bcrypt(v: str) -> str:
++    if len(v.encode("utf-8")) > 72:
++        raise ValueError("password must be at most 72 bytes (about 72 characters)")
++    return v
++
++
++def _indian_mobile(v: Optional[str]) -> Optional[str]:
++    if v is None:
++        return v
++    digits = v.replace("+91", "").replace(" ", "").replace("-", "")
++    if not (digits.isdigit() and len(digits) == 10):
++        raise ValueError(
++            "phone must be a valid 10-digit Indian mobile number, optionally prefixed with +91"
++        )
++    return v
++
++
+ class RegisterRequest(BaseModel):
+     email: EmailStr
+     password: str = Field(min_length=8, max_length=128)
+     phone: Optional[str] = Field(default=None, max_length=20)
+     role: str = Field(default="customer")
+ 
+-    @field_validator("password")
+-    @classmethod
+-    def password_fits_bcrypt(cls, v):
+-        if len(v.encode("utf-8")) > 72:
+-            raise ValueError("password must be at most 72 bytes (about 72 characters)")
+-        return v
++    _email = field_validator("email")(_lowercase_email)
++    _password = field_validator("password")(_password_fits_bcrypt)
++    _phone = field_validator("phone")(_indian_mobile)
+ 
+     @field_validator("role")
+     @classmethod
+@@ -28,23 +49,37 @@ class RegisterRequest(BaseModel):
+             raise ValueError(f"role must be one of {PUBLIC_ROLES}")
+         return v
+ 
+-    @field_validator("phone")
+-    @classmethod
+-    def phone_format(cls, v):
+-        if v is None:
+-            return v
+-        digits = v.replace("+91", "").replace(" ", "").replace("-", "")
+-        if not (digits.isdigit() and len(digits) == 10):
+-            raise ValueError(
+-                "phone must be a valid 10-digit Indian mobile number, optionally prefixed with +91"
+-            )
+-        return v
++
++class AdminCreateContractorRequest(BaseModel):
++    """An administrator adding a contractor. No role field on purpose: this
++    endpoint can only ever create contractors, and extra fields are refused so
++    a client cannot try to smuggle one in."""
++
++    model_config = ConfigDict(extra="forbid")
++
++    email: EmailStr
++    password: str = Field(min_length=8, max_length=128)
++    phone: Optional[str] = Field(default=None, max_length=20)
++
++    _email = field_validator("email")(_lowercase_email)
++    _password = field_validator("password")(_password_fits_bcrypt)
++    _phone = field_validator("phone")(_indian_mobile)
++
++
++class UserSummary(BaseModel):
++    user_id: uuid.UUID
++    email: str
++    phone: Optional[str] = None
++    role: str
++    created_at: Optional[datetime] = None
+ 
+ 
+ class LoginRequest(BaseModel):
+     email: EmailStr
+     password: str = Field(max_length=128)
+ 
++    _email = field_validator("email")(_lowercase_email)
++
+ 
+ class GoogleLoginRequest(BaseModel):
+     id_token: str = Field(min_length=20, max_length=4096)
+diff --git a/services/platform-spine/tests/test_admin.py b/services/platform-spine/tests/test_admin.py
+new file mode 100644
+index 0000000..aa05041
+--- /dev/null
++++ b/services/platform-spine/tests/test_admin.py
+@@ -0,0 +1,183 @@
++"""Admin adds contractors; admin lists accounts; email handling; and that a
++resource_owner can no longer read customers' jobs."""
++import pytest
++from app import models
++from app.bootstrap import ensure_admin
++from app.security import hash_password
++
++PASSWORD = "pass12345678"
++
++
++def _h(token):
++    return {"Authorization": f"Bearer {token}"}
++
++
++def _login(client, email, password=PASSWORD):
++    resp = client.post("/v1/auth/login", json={"email": email, "password": password})
++    assert resp.status_code == 200, resp.text
++    return resp.json()["access_token"]
++
++
++def _register(client, email, role):
++    resp = client.post(
++        "/v1/auth/register", json={"email": email, "password": PASSWORD, "role": role}
++    )
++    assert resp.status_code == 201, resp.text
++    return resp.json()["access_token"]
++
++
++@pytest.fixture()
++def admin(client):
++    db = client.test_session_local()
++    try:
++        assert ensure_admin(db, "root@borewell.example.com", PASSWORD)
++    finally:
++        db.close()
++    return _login(client, "root@borewell.example.com")
++
++
++def _add(client, admin, **overrides):
++    body = {"email": "new.contractor@example.com", "password": PASSWORD, "phone": "9876543210"}
++    body.update(overrides)
++    return client.post("/v1/admin/contractors", json=body, headers=_h(admin))
++
++
++# ---------- adding a contractor ----------
++def test_admin_can_add_a_contractor_who_can_then_sign_in(client, admin):
++    resp = _add(client, admin)
++
++    assert resp.status_code == 201
++    body = resp.json()
++    assert body["role"] == "contractor" and body["email"] == "new.contractor@example.com"
++    assert "password" not in body and "password_hash" not in body
++    token = _login(client, "new.contractor@example.com")
++    assert client.get("/v1/jobs", headers=_h(token)).status_code == 200
++
++
++def test_adding_a_contractor_works_when_public_contractor_signup_is_closed(
++    client, admin, monkeypatch
++):
++    monkeypatch.setenv("ALLOW_PUBLIC_CONTRACTOR_REGISTRATION", "0")
++    public = client.post(
++        "/v1/auth/register",
++        json={"email": "walkup@example.com", "password": PASSWORD, "role": "contractor"},
++    )
++    assert public.status_code == 403
++    assert _add(client, admin).status_code == 201
++
++
++@pytest.mark.parametrize("role", ["customer", "contractor", "resource_owner"])
++def test_only_an_admin_can_add_contractors(client, role):
++    token = _register(client, f"{role}@example.com", role)
++    assert _add(client, token).status_code == 403
++
++
++def test_adding_a_contractor_requires_a_login(client):
++    resp = client.post(
++        "/v1/admin/contractors", json={"email": "a@example.com", "password": PASSWORD}
++    )
++    assert resp.status_code == 401
++
++
++def test_the_admin_endpoint_cannot_be_used_to_create_other_roles(client, admin):
++    resp = _add(client, admin, role="admin")
++    assert resp.status_code == 422
++
++
++@pytest.mark.parametrize(
++    "email",
++    [
++        "not-an-email",
++        "a@b",
++        "two@@example.com",
++        "spaces in@example.com",
++        "no-domain@",
++        "@x.com",
++        "",
++    ],
++)
++def test_invalid_emails_are_rejected(client, admin, email):
++    assert _add(client, admin, email=email).status_code == 422
++    reg = client.post("/v1/auth/register", json={"email": email, "password": PASSWORD})
++    assert reg.status_code == 422
++
++
++def test_weak_password_and_bad_phone_are_rejected(client, admin):
++    assert _add(client, admin, password="short").status_code == 422
++    assert _add(client, admin, phone="12345").status_code == 422
++
++
++def test_duplicate_email_is_refused_whatever_the_case(client, admin):
++    assert _add(client, admin, email="Same.Person@Example.com").status_code == 201
++    again = _add(client, admin, email="same.person@example.com")
++    assert again.status_code == 409 and again.json()["error"]["code"] == "EMAIL_TAKEN"
++    reg = client.post(
++        "/v1/auth/register", json={"email": "SAME.PERSON@example.com", "password": PASSWORD}
++    )
++    assert reg.status_code == 409
++
++
++# ---------- email case ----------
++def test_email_is_stored_lower_case_and_login_ignores_case(client):
++    _register(client, "Mixed.Case@Example.com", "customer")
++    db = client.test_session_local()
++    try:
++        assert db.query(models.User).one().email == "mixed.case@example.com"
++    finally:
++        db.close()
++    assert _login(client, "MIXED.CASE@example.COM")
++
++
++def test_an_account_stored_with_capitals_before_this_change_can_still_sign_in(client):
++    db = client.test_session_local()
++    try:
++        db.add(
++            models.User(
++                email="Legacy.User@Example.com",
++                password_hash=hash_password(PASSWORD),
++                role="customer",
++            )
++        )
++        db.commit()
++    finally:
++        db.close()
++    assert _login(client, "legacy.user@example.com")
++
++
++# ---------- listing accounts ----------
++def test_admin_lists_accounts_with_an_optional_role_filter(client, admin):
++    _register(client, "cust@example.com", "customer")
++    _add(client, admin)
++
++    everyone = client.get("/v1/admin/users", headers=_h(admin)).json()
++    assert {u["role"] for u in everyone} == {"admin", "customer", "contractor"}
++    assert all("password" not in u and "password_hash" not in u for u in everyone)
++
++    contractors = client.get("/v1/admin/users?role=contractor", headers=_h(admin)).json()
++    assert [u["email"] for u in contractors] == ["new.contractor@example.com"]
++    assert client.get("/v1/admin/users?role=wizard", headers=_h(admin)).status_code == 422
++
++
++@pytest.mark.parametrize("role", ["customer", "contractor", "resource_owner"])
++def test_only_an_admin_can_list_accounts(client, role):
++    token = _register(client, f"{role}-list@example.com", role)
++    assert client.get("/v1/admin/users", headers=_h(token)).status_code == 403
++
++
++# ---------- a rig owner must not read customers' jobs ----------
++def test_resource_owner_cannot_read_jobs(client):
++    customer = _register(client, "job.owner@example.com", "customer")
++    owner = _register(client, "rig.owner@example.com", "resource_owner")
++    job = client.post(
++        "/v1/jobs",
++        json={"location": {"lat": 9.9, "lng": 78.1}, "job_type": "residential"},
++        headers=_h(customer),
++    ).json()
++
++    assert client.get("/v1/jobs", headers=_h(owner)).status_code == 403
++    assert client.get(f"/v1/jobs/{job['job_id']}", headers=_h(owner)).status_code == 403
++    assert (
++        client.get(f"/v1/jobs/{job['job_id']}/completion/result", headers=_h(owner)).status_code
++        == 403
++    )
++    assert client.get(f"/v1/jobs/{job['job_id']}", headers=_h(customer)).status_code == 200
+diff --git a/services/quotation/app/main.py b/services/quotation/app/main.py
+index 5bd28ab..4d1e63f 100644
+--- a/services/quotation/app/main.py
++++ b/services/quotation/app/main.py
+@@ -257,8 +257,12 @@ def _require_quotation_access(quotation: models.Quotation, claims: dict) -> None
+     Customers may only touch quotations for jobs they own; contractor/admin
+     keep the existing single-contractor MVP assumption of seeing
+     everything. This is F-01's actual fix - previously nothing here
+-    checked this at all."""
+-    if claims["role"] == "customer" and quotation.customer_id != claims["sub"]:
++    checked this at all. A resource_owner has no business reading prices or
++    customer ids, so any role outside customer/contractor/admin is refused."""
++    role = claims["role"]
++    if role not in ("customer", "contractor", "admin") or (
++        role == "customer" and quotation.customer_id != claims["sub"]
++    ):
+         raise HTTPException(
+             status_code=status.HTTP_403_FORBIDDEN,
+             detail={"code": "FORBIDDEN", "message": "You do not have access to this quotation."},
+diff --git a/services/quotation/tests/test_quotations.py b/services/quotation/tests/test_quotations.py
+index d68ea42..1b5a144 100644
+--- a/services/quotation/tests/test_quotations.py
++++ b/services/quotation/tests/test_quotations.py
+@@ -479,3 +479,22 @@ def test_only_the_latest_version_can_be_edited(client_factory):
+ 
+     assert resp.status_code == 409
+     assert resp.json()["error"]["code"] == "QUOTATION_SUPERSEDED"
++
++
++def test_resource_owner_cannot_read_quotations(client):
++    token = _setup_rule(client, "contractor-owner-read")
++    created = client.post(
++        "/v1/quotations", json=_quote_request(), headers={"Authorization": f"Bearer {token}"}
++    ).json()
++    owner = make_token("a-rig-owner", "resource_owner")
++
++    by_id = client.get(
++        f"/v1/quotations/{created['quotation_id']}", headers={"Authorization": f"Bearer {owner}"}
++    )
++    by_job = client.get(
++        f"/v1/quotations/job/{created['job_id']}/latest",
++        headers={"Authorization": f"Bearer {owner}"},
++    )
++
++    assert by_id.status_code == 403
++    assert by_job.status_code == 403
+-- 
+2.43.0
+
+
+From 63c987c4760908a3fe66fc9e51d431bc4cfbb108 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 22:13:07 +0530
+Subject: [PATCH 5/6] borewell-native: admin dashboard, keyboard flow, email
+ validation, payment and rig fixes
+
+- Admin workspace (Overview, People) with Add contractor: validated email,
+  generated or chosen password, credentials shown once. Admin job screen is
+  read-only.
+- lib/form.js: email/password/phone validation matching the server, and
+  Next/Done keyboard chaining wired into sign-in, register, walk-in, setup,
+  fleet, completion and edit-quote forms; Screen and Sheet avoid the keyboard.
+- Customer job: payment card sits directly under "Now"; cash stays selectable
+  after "Pay online" (with a double-payment warning).
+- Release rig from the contractor job, Bookings and owner requests; Finished
+  booking status.
+- Edit quote hidden once the job is paid.
+- demo backend mirrors the admin, release and cash-after-online rules.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ apps/borewell-native/components/ui.js         |  17 +-
+ apps/borewell-native/lib/form.js              |  83 +++++++++
+ apps/borewell-native/screens/AuthScreen.js    |  21 ++-
+ .../screens/admin/AdminOverview.js            | 148 +++++++++++++++
+ .../screens/admin/AdminPeople.js              | 176 ++++++++++++++++++
+ .../screens/contractor/Bookings.js            |  29 ++-
+ .../screens/contractor/ContractorJob.js       |  75 ++++++--
+ .../screens/contractor/Setup.js               |  18 +-
+ .../screens/contractor/WalkIn.js              |   4 +
+ .../screens/customer/CustomerJob.js           | 152 ++++++++-------
+ apps/borewell-native/screens/index.js         |  18 +-
+ .../screens/owner/OwnerFleet.js               |  13 +-
+ .../screens/owner/OwnerRequests.js            |  20 +-
+ apps/borewell-native/services/demo.js         |  76 +++++++-
+ apps/borewell-native/services/platform.js     |  22 +++
+ apps/borewell-native/theme.js                 |   3 +-
+ 16 files changed, 765 insertions(+), 110 deletions(-)
+ create mode 100644 apps/borewell-native/lib/form.js
+ create mode 100644 apps/borewell-native/screens/admin/AdminOverview.js
+ create mode 100644 apps/borewell-native/screens/admin/AdminPeople.js
+
+diff --git a/apps/borewell-native/components/ui.js b/apps/borewell-native/components/ui.js
+index 94635f6..4838f55 100644
+--- a/apps/borewell-native/components/ui.js
++++ b/apps/borewell-native/components/ui.js
+@@ -9,7 +9,9 @@
+  */
+ import {
+   ActivityIndicator,
++  KeyboardAvoidingView,
+   Modal,
++  Platform,
+   Pressable,
+   ScrollView,
+   StyleSheet,
+@@ -24,15 +26,19 @@ export function Screen({ children, dark, style, scroll = true, contentStyle }) {
+   if (!scroll) {
+     return <View style={[{ flex: 1, backgroundColor: background }, style]}>{children}</View>;
+   }
++  // KeyboardAvoidingView on both platforms: Expo's translucent status bar
++  // (the default) stops Android's own resize from lifting the form, and the
++  // Expo config docs say to use KeyboardAvoidingView in that case.
+   return (
+-    <View style={[{ flex: 1, backgroundColor: background }, style]}>
++    <KeyboardAvoidingView behavior="padding" style={[{ flex: 1, backgroundColor: background }, style]}>
+       <ScrollView
+         contentContainerStyle={[{ padding: 20, paddingBottom: 120, gap: 14 }, contentStyle]}
+         keyboardShouldPersistTaps="handled"
++        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+       >
+         {children}
+       </ScrollView>
+-    </View>
++    </KeyboardAvoidingView>
+   );
+ }
+ 
+@@ -276,7 +282,10 @@ export function Loading({ label = "Loading…", dark }) {
+ export function Sheet({ visible, title, onClose, children, actions }) {
+   return (
+     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+-      <View style={{ flex: 1, backgroundColor: "rgba(20,22,25,0.45)", justifyContent: "flex-end" }}>
++      <KeyboardAvoidingView
++        behavior="padding"
++        style={{ flex: 1, backgroundColor: "rgba(20,22,25,0.45)", justifyContent: "flex-end" }}
++      >
+         {/* Surface, not ground: insets inside a sheet are ground, and a
+             ground-on-ground sheet loses them. */}
+         <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, paddingBottom: 34, maxHeight: "92%", gap: 14 }}>
+@@ -290,7 +299,7 @@ export function Sheet({ visible, title, onClose, children, actions }) {
+           </ScrollView>
+           {actions}
+         </View>
+-      </View>
++      </KeyboardAvoidingView>
+     </Modal>
+   );
+ }
+diff --git a/apps/borewell-native/lib/form.js b/apps/borewell-native/lib/form.js
+new file mode 100644
+index 0000000..c07001e
+--- /dev/null
++++ b/apps/borewell-native/lib/form.js
+@@ -0,0 +1,83 @@
++/**
++ * Form helpers shared by every screen with inputs: validation that matches
++ * what the backend enforces (so a typo is caught before a round trip, and the
++ * message is the same either way), and keyboard flow - Next moves to the next
++ * field, Done on the last field submits.
++ *
++ * The backend stays the authority: these only save the user a failed request.
++ */
++import { createRef, useState } from "react";
++
++// Pragmatic, not RFC-complete: one @, a dotted domain, no spaces, no empty or
++// doubled dots. The server runs the full email-validator check.
++const EMAIL_RE = /^[^\s@.]+(\.[^\s@.]+)*@[^\s@.]+(\.[^\s@.]+)*\.[^\s@.]{2,}$/;
++
++export function normaliseEmail(value) {
++  return String(value ?? "").trim().toLowerCase();
++}
++
++/** Returns an error message, or null when the email looks valid. */
++export function emailError(value) {
++  const email = normaliseEmail(value);
++  if (!email) return "Enter an email address.";
++  if (email.length > 254 || !EMAIL_RE.test(email)) return "Enter a valid email address, like name@example.com.";
++  return null;
++}
++
++/** Same limits as the backend: 8+ characters, at most 72 bytes (bcrypt). */
++export function passwordError(value) {
++  const password = String(value ?? "");
++  if (password.length < 8) return "Use at least 8 characters.";
++  if (new TextEncoder().encode(password).length > 72) return "Use at most 72 characters.";
++  return null;
++}
++
++/** Optional 10-digit Indian mobile, with or without +91. Empty is fine. */
++export function phoneError(value) {
++  const raw = String(value ?? "").trim();
++  if (!raw) return null;
++  const digits = raw.replace("+91", "").replace(/[\s-]/g, "");
++  return /^\d{10}$/.test(digits) ? null : "Enter a 10-digit mobile number.";
++}
++
++/** A password an admin can hand to a new contractor: no look-alike characters. */
++export function generatePassword(length = 12) {
++  const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
++  let out = "";
++  for (let i = 0; i < length; i += 1) out += alphabet[Math.floor(Math.random() * alphabet.length)];
++  return out;
++}
++
++/**
++ * Throws when any value in `errors` ({ field: message | null }) is set, in the
++ * shape useAction's run() already understands: the message lands in the alert
++ * and each field's message under its input.
++ */
++export function assertValid(errors) {
++  const failed = Object.entries(errors).filter(([, message]) => message);
++  if (!failed.length) return;
++  const err = new Error("Please fix the highlighted fields.");
++  err.fieldErrors = Object.fromEntries(failed);
++  throw err;
++}
++
++/** One stable ref per field, in tab order. */
++export function useFieldRefs(count) {
++  const [refs] = useState(() => Array.from({ length: count }, () => createRef()));
++  return refs;
++}
++
++/**
++ * Props that wire field `index` into the chain: spread them onto <Input>.
++ * The last field shows "Done" and calls onSubmit; the others show "Next".
++ * Not for multiline inputs, where Enter must stay a newline.
++ */
++export function chain(refs, index, onSubmit) {
++  const last = index === refs.length - 1;
++  return {
++    ref: refs[index],
++    returnKeyType: last ? "done" : "next",
++    submitBehavior: last ? "blurAndSubmit" : "submit",
++    onSubmitEditing: last ? onSubmit : () => refs[index + 1].current?.focus(),
++  };
++}
+diff --git a/apps/borewell-native/screens/AuthScreen.js b/apps/borewell-native/screens/AuthScreen.js
+index 2050d86..3c91539 100644
+--- a/apps/borewell-native/screens/AuthScreen.js
++++ b/apps/borewell-native/screens/AuthScreen.js
+@@ -12,6 +12,9 @@ import { DEMO_MODE, PLATFORM_SPINE_URL } from "../services/platform";
+ import { DEMO_ACCOUNTS } from "../services/demo";
+ import { colors } from "../theme";
+ import { useAction } from "../lib/hooks";
++import {
++  assertValid, chain, emailError, normaliseEmail, passwordError, phoneError, useFieldRefs,
++} from "../lib/form";
+ import { useSession } from "../lib/session";
+ import { GOOGLE_ENABLED, getGoogleIdToken } from "../lib/google";
+ import DepthGauge from "../components/DepthGauge";
+@@ -35,13 +38,21 @@ export default function AuthScreen() {
+   const [notice, setNotice] = useState(null);
+ 
+   const registering = mode === "register";
++  const refs = useFieldRefs(3); // email, phone, password
++  const order = registering ? refs : [refs[0], refs[2]]; // sign-in has no phone field
+ 
+   async function submit() {
+     await run(async () => {
++      const cleanEmail = normaliseEmail(email);
++      assertValid({
++        email: emailError(email),
++        phone: registering ? phoneError(phone) : null,
++        password: registering ? passwordError(password) : password ? null : "Enter your password.",
++      });
+       const { access_token: token } = registering
+-        ? await registerAccount(PLATFORM_SPINE_URL, { email, password, phone, role })
+-        : await login(PLATFORM_SPINE_URL, email, password);
+-      await signIn({ token, email });
++        ? await registerAccount(PLATFORM_SPINE_URL, { email: cleanEmail, password, phone, role })
++        : await login(PLATFORM_SPINE_URL, cleanEmail, password);
++      await signIn({ token, email: cleanEmail });
+     });
+   }
+ 
+@@ -122,6 +133,8 @@ export default function AuthScreen() {
+               autoCorrect={false}
+               keyboardType="email-address"
+               textContentType="emailAddress"
++              autoComplete="email"
++              {...chain(order, 0, submit)}
+             />
+           </Field>
+ 
+@@ -132,6 +145,7 @@ export default function AuthScreen() {
+                 onChangeText={(value) => { setPhone(value); clearFieldError("phone"); }}
+                 placeholder="+91 "
+                 keyboardType="phone-pad"
++                {...chain(order, 1, submit)}
+               />
+             </Field>
+           )}
+@@ -144,6 +158,7 @@ export default function AuthScreen() {
+               secureTextEntry
+               autoCapitalize="none"
+               textContentType={registering ? "newPassword" : "password"}
++              {...chain(order, order.length - 1, submit)}
+             />
+           </Field>
+ 
+diff --git a/apps/borewell-native/screens/admin/AdminOverview.js b/apps/borewell-native/screens/admin/AdminOverview.js
+new file mode 100644
+index 0000000..73ed6c4
+--- /dev/null
++++ b/apps/borewell-native/screens/admin/AdminOverview.js
+@@ -0,0 +1,148 @@
++/**
++ * The admin's overview: money first (what has actually been collected), then
++ * where every job sits, who is on the platform, and the latest jobs. Read-only
++ * on purpose - every figure here comes from endpoints the admin role already
++ * has, and tapping a job opens the same job screen the contractor uses.
++ */
++import { useMemo } from "react";
++import { View } from "react-native";
++import {
++  PAYMENTS_URL, PLATFORM_SPINE_URL, listMyJobs, listPayments, listUsers,
++} from "../../services/platform";
++import {
++  PHASES, STAGE_LABELS, colors, formatInr, formatRelative, jobTypeLabel, phaseOf, shortId, stageTone,
++} from "../../theme";
++import { useLoad } from "../../lib/hooks";
++import { useNav } from "../../lib/nav";
++import { useSession } from "../../lib/session";
++import { PageHeader } from "../../components/AppShell";
++import {
++  Alert, Amount, Badge, Body, Button, Card, EmptyState, Eyebrow, Icon, JobTypeIcon, Loading, Row, Screen, Tile, Title,
++} from "../../components/ui";
++
++const RECENT_JOBS = 6;
++
++export default function AdminOverview() {
++  const { session } = useSession();
++  const { navigate } = useNav();
++
++  const jobs = useLoad(() => listMyJobs(PLATFORM_SPINE_URL, session.token), [session.token], { pollMs: 30000 });
++  const payments = useLoad(() => listPayments(PAYMENTS_URL, session.token), [session.token], { pollMs: 30000 });
++  const users = useLoad(() => listUsers(PLATFORM_SPINE_URL, session.token), [session.token]);
++
++  const list = useMemo(() => jobs.data || [], [jobs.data]);
++  const byPhase = useMemo(() => {
++    const counts = Object.fromEntries(PHASES.map((p) => [p.key, 0]));
++    list.forEach((j) => { counts[phaseOf(j.status).key] += 1; });
++    return counts;
++  }, [list]);
++
++  const money = useMemo(() => {
++    const out = { collected: 0, pending: 0, cash: 0, online: 0, paid: 0, open: 0 };
++    (payments.data || []).forEach((p) => {
++      const amount = Number(p.amount) || 0;
++      if (p.status === "completed") {
++        out.collected += amount;
++        out.paid += 1;
++        out[p.method === "cash" ? "cash" : "online"] += amount;
++      } else if (p.status === "pending") {
++        out.pending += amount;
++        out.open += 1;
++      }
++    });
++    return out;
++  }, [payments.data]);
++
++  const people = useMemo(() => {
++    const counts = { customer: 0, contractor: 0, resource_owner: 0, admin: 0 };
++    (users.data || []).forEach((u) => { counts[u.role] = (counts[u.role] || 0) + 1; });
++    return counts;
++  }, [users.data]);
++
++  const loading = (jobs.loading && !jobs.data) || (payments.loading && !payments.data);
++  const failed = jobs.error || payments.error || users.error;
++
++  return (
++    <Screen>
++      <PageHeader title="Overview" subtitle={`${list.length} jobs · ${(users.data || []).length} accounts`} />
++
++      {!!failed && <Alert>{failed.message}</Alert>}
++
++      <Card dark>
++        <Eyebrow dark>Collected</Eyebrow>
++        <Amount size={34} color="#fff">{formatInr(money.collected.toFixed(2))}</Amount>
++        <Body size={13} muted dark>
++          {money.paid} {money.paid === 1 ? "payment" : "payments"} · {formatInr(money.online.toFixed(2))} online · {formatInr(money.cash.toFixed(2))} cash
++        </Body>
++      </Card>
++
++      <Row gap={10}>
++        <Stat label="Awaiting payment" value={formatInr(money.pending.toFixed(2))} sub={`${money.open} open`} icon="wallet" />
++        <Stat label="Drilling now" value={byPhase.drilling ?? 0} sub="rigs on site" icon="truck" />
++      </Row>
++
++      <Card>
++        <Title size={19}>Jobs by stage</Title>
++        {loading && <Loading />}
++        {PHASES.map((phase) => (
++          <Row key={phase.key}>
++            <Body weight="600" style={{ flex: 1 }}>{phase.label}</Body>
++            <Body weight="700" style={{ fontVariant: ["tabular-nums"] }}>{byPhase[phase.key] ?? 0}</Body>
++          </Row>
++        ))}
++      </Card>
++
++      <Card>
++        <Row>
++          <Title size={19} style={{ flex: 1 }}>People</Title>
++          <Button title="Manage" variant="light" size="sm" onPress={() => navigate("admin.people")} />
++        </Row>
++        <Row gap={10}>
++          <Count label="Customers" value={people.customer} />
++          <Count label="Contractors" value={people.contractor} />
++          <Count label="Rig owners" value={people.resource_owner} />
++        </Row>
++      </Card>
++
++      <Title size={19}>Latest jobs</Title>
++      {jobs.data && list.length === 0 && (
++        <Card><EmptyState title="No jobs yet">Jobs appear here as soon as a customer or contractor opens one.</EmptyState></Card>
++      )}
++      {list.slice(0, RECENT_JOBS).map((job) => (
++        <Card key={job.job_id} onPress={() => navigate("admin.job", { jobId: job.job_id })}>
++          <Row gap={12}>
++            <Tile><JobTypeIcon jobType={job.job_type} /></Tile>
++            <View style={{ flex: 1, gap: 2 }}>
++              <Body size={16} weight="700">{job.walk_in && job.customer_name ? job.customer_name : jobTypeLabel(job.job_type, true)}</Body>
++              <Body size={12} muted style={{ fontVariant: ["tabular-nums"] }}>{shortId(job.job_id)} · {formatRelative(job.created_at)}</Body>
++            </View>
++            <Badge tone={stageTone(job.status)}>{STAGE_LABELS[job.status]}</Badge>
++            <Icon name="chevronRight" size={16} color={colors.muted} />
++          </Row>
++        </Card>
++      ))}
++    </Screen>
++  );
++}
++
++function Stat({ label, value, sub, icon }) {
++  return (
++    <View style={{ flex: 1, backgroundColor: colors.surface, borderRadius: 20, padding: 14, gap: 8 }}>
++      <Row>
++        <Body size={11} muted numberOfLines={1} style={{ flex: 1 }}>{label}</Body>
++        <Icon name={icon} size={15} color={colors.muted} />
++      </Row>
++      <Amount size={22}>{value}</Amount>
++      <Body size={11} muted numberOfLines={1}>{sub}</Body>
++    </View>
++  );
++}
++
++function Count({ label, value }) {
++  return (
++    <View style={{ flex: 1, backgroundColor: colors.ground, borderRadius: 16, padding: 12, gap: 4 }}>
++      <Amount size={22}>{value ?? 0}</Amount>
++      <Body size={11} muted numberOfLines={1}>{label}</Body>
++    </View>
++  );
++}
+diff --git a/apps/borewell-native/screens/admin/AdminPeople.js b/apps/borewell-native/screens/admin/AdminPeople.js
+new file mode 100644
+index 0000000..ad20eec
+--- /dev/null
++++ b/apps/borewell-native/screens/admin/AdminPeople.js
+@@ -0,0 +1,176 @@
++/**
++ * Everyone on the platform, and the one thing only an admin can do here: add a
++ * contractor. The admin picks the password (or generates one) and hands it over
++ * out of band - the server never returns it, so after a successful add this
++ * screen shows the credentials once, in the sheet, and nowhere else.
++ */
++import { useMemo, useState } from "react";
++import { View } from "react-native";
++import { PLATFORM_SPINE_URL, createContractor, listUsers } from "../../services/platform";
++import { formatRelative } from "../../theme";
++import { assertValid, chain, emailError, generatePassword, normaliseEmail, passwordError, phoneError, useFieldRefs } from "../../lib/form";
++import { useAction, useLoad, useToast } from "../../lib/hooks";
++import { useSession } from "../../lib/session";
++import { PageHeader } from "../../components/AppShell";
++import {
++  Alert, Avatar, Badge, Body, Button, Card, EmptyState, Field, Input, Inset, KeyValue, Loading, Pills, Row, Screen, Sheet, Toast,
++} from "../../components/ui";
++
++const ROLE_FILTERS = [
++  { value: "all", label: "All" },
++  { value: "customer", label: "Customers" },
++  { value: "contractor", label: "Contractors" },
++  { value: "resource_owner", label: "Rig owners" },
++  { value: "admin", label: "Admins" },
++];
++const ROLE_LABELS = { customer: "Customer", contractor: "Contractor", resource_owner: "Rig owner", admin: "Admin" };
++const ROLE_TONES = { customer: "neutral", contractor: "saffron", resource_owner: "slate", admin: "green" };
++
++export default function AdminPeople() {
++  const { session } = useSession();
++  const [filter, setFilter] = useState("all");
++  const [adding, setAdding] = useState(false);
++  const [toast, setToast] = useToast();
++
++  const users = useLoad(() => listUsers(PLATFORM_SPINE_URL, session.token), [session.token]);
++
++  const counts = useMemo(() => {
++    const out = { all: (users.data || []).length };
++    (users.data || []).forEach((u) => { out[u.role] = (out[u.role] || 0) + 1; });
++    return out;
++  }, [users.data]);
++  const shown = (users.data || []).filter((u) => filter === "all" || u.role === filter);
++
++  return (
++    <Screen>
++      <PageHeader title="People" subtitle="Every account on the platform" />
++
++      <Button title="Add contractor" variant="saffron" trailing onPress={() => setAdding(true)} />
++
++      <Pills
++        value={filter}
++        onChange={setFilter}
++        options={ROLE_FILTERS.map((f) => ({ ...f, count: counts[f.value] ?? 0 }))}
++      />
++
++      {!!users.error && <Alert>{users.error.message}</Alert>}
++      {users.loading && !users.data && <Card><Loading label="Loading accounts…" /></Card>}
++      {users.data && shown.length === 0 && (
++        <Card><EmptyState title="No accounts here">Nobody has this role yet.</EmptyState></Card>
++      )}
++
++      {shown.map((user) => (
++        <Card key={user.user_id}>
++          <Row gap={12}>
++            <Avatar initials={(user.email || "?").slice(0, 2).toUpperCase()} />
++            <View style={{ flex: 1, gap: 2 }}>
++              <Body size={15} weight="700" numberOfLines={1}>{user.email}</Body>
++              <Body size={12} muted>
++                {user.phone ? `${user.phone} · ` : ""}joined {user.created_at ? formatRelative(user.created_at) : "—"}
++              </Body>
++            </View>
++            <Badge tone={ROLE_TONES[user.role] || "neutral"}>{ROLE_LABELS[user.role] || user.role}</Badge>
++          </Row>
++        </Card>
++      ))}
++
++      {adding && (
++        <AddContractorSheet
++          token={session.token}
++          onClose={() => setAdding(false)}
++          onAdded={async () => { setToast("Contractor added"); await users.reload(); }}
++        />
++      )}
++      <Toast message={toast} />
++    </Screen>
++  );
++}
++
++function AddContractorSheet({ token, onClose, onAdded }) {
++  const action = useAction();
++  const refs = useFieldRefs(3); // email, phone, password
++  const [email, setEmail] = useState("");
++  const [phone, setPhone] = useState("");
++  const [password, setPassword] = useState("");
++  const [created, setCreated] = useState(null); // credentials, shown once after success
++
++  async function submit() {
++    await action.run(async () => {
++      assertValid({
++        email: emailError(email),
++        phone: phoneError(phone),
++        password: passwordError(password),
++      });
++      const cleanEmail = normaliseEmail(email);
++      await createContractor(PLATFORM_SPINE_URL, token, { email: cleanEmail, password, phone: phone.trim() });
++      setCreated({ email: cleanEmail, password });
++      await onAdded();
++    });
++  }
++
++  if (created) {
++    return (
++      <Sheet visible title="Contractor added" onClose={onClose} actions={<Button title="Done" onPress={onClose} />}>
++        <Alert tone="ok">Share these sign-in details with them now - the password is not shown again.</Alert>
++        <Inset>
++          <KeyValue k="Email" v={created.email} />
++          <KeyValue k="Password" v={created.password} />
++        </Inset>
++        <Body size={13} muted>They sign in with these on the normal sign-in screen and land on the contractor workspace.</Body>
++      </Sheet>
++    );
++  }
++
++  return (
++    <Sheet
++      visible
++      title="Add contractor"
++      onClose={onClose}
++      actions={
++        <Row gap={10}>
++          <Button title="Cancel" variant="light" style={{ flex: 1 }} onPress={onClose} />
++          <Button title={action.busy ? "Adding…" : "Add contractor"} style={{ flex: 1.4 }} busy={action.busy} onPress={submit} />
++        </Row>
++      }
++    >
++      <Field label="Email" error={action.fieldErrors.email}>
++        <Input
++          value={email}
++          onChangeText={(v) => { setEmail(v); action.clearFieldError("email"); }}
++          placeholder="contractor@example.com"
++          autoCapitalize="none"
++          autoCorrect={false}
++          keyboardType="email-address"
++          {...chain(refs, 0, submit)}
++        />
++      </Field>
++      <Field label="Phone" hint="Optional" error={action.fieldErrors.phone}>
++        <Input
++          value={phone}
++          onChangeText={(v) => { setPhone(v); action.clearFieldError("phone"); }}
++          placeholder="98765 43210"
++          keyboardType="phone-pad"
++          {...chain(refs, 1, submit)}
++        />
++      </Field>
++      <Field label="Password" hint="At least 8 characters. You hand this over; it is not emailed." error={action.fieldErrors.password}>
++        <Input
++          value={password}
++          onChangeText={(v) => { setPassword(v); action.clearFieldError("password"); }}
++          placeholder="Choose or generate one"
++          autoCapitalize="none"
++          autoCorrect={false}
++          {...chain(refs, 2, submit)}
++        />
++      </Field>
++      <Button
++        title="Generate a password"
++        variant="light"
++        size="sm"
++        onPress={() => { setPassword(generatePassword()); action.clearFieldError("password"); }}
++      />
++      {!!action.error && <Alert>{action.error}</Alert>}
++    </Sheet>
++  );
++}
++
+diff --git a/apps/borewell-native/screens/contractor/Bookings.js b/apps/borewell-native/screens/contractor/Bookings.js
+index d97070e..94c0127 100644
+--- a/apps/borewell-native/screens/contractor/Bookings.js
++++ b/apps/borewell-native/screens/contractor/Bookings.js
+@@ -4,14 +4,14 @@
+  */
+ import { useState } from "react";
+ import { View } from "react-native";
+-import { RESOURCE_NETWORK_URL, listBookings } from "../../services/platform";
++import { RESOURCE_NETWORK_URL, listBookings, releaseBooking } from "../../services/platform";
+ import { BOOKING_STATUS_LABELS, bookingTone, formatRelative, shortId } from "../../theme";
+-import { useLoad } from "../../lib/hooks";
++import { useAction, useLoad, useToast } from "../../lib/hooks";
+ import { useNav } from "../../lib/nav";
+ import { useSession } from "../../lib/session";
+ import { PageHeader } from "../../components/AppShell";
+ import {
+-  Alert, Badge, Body, Card, EmptyState, Icon, Loading, Pills, Row, Screen, Tile,
++  Alert, Badge, Body, Button, Card, EmptyState, Icon, Loading, Pills, Row, Screen, Tile, Toast,
+ } from "../../components/ui";
+ 
+ const FILTERS = [
+@@ -19,12 +19,15 @@ const FILTERS = [
+   { value: "pending", label: "Pending" },
+   { value: "accepted", label: "Accepted" },
+   { value: "rejected", label: "Declined" },
++  { value: "completed", label: "Finished" },
+ ];
+ 
+ export default function Bookings() {
+   const { session } = useSession();
+   const { navigate } = useNav();
+   const [filter, setFilter] = useState("all");
++  const [toast, setToast] = useToast();
++  const action = useAction();
+   const bookings = useLoad(() => listBookings(RESOURCE_NETWORK_URL, session.token), [session.token], { pollMs: 30000 });
+ 
+   const all = bookings.data || [];
+@@ -33,10 +36,20 @@ export default function Bookings() {
+     FILTERS.map((f) => [f.value, f.value === "all" ? all.length : all.filter((b) => b.status === f.value).length])
+   );
+ 
++  // Frees the rig once the work is done, so it can be booked by someone else.
++  async function release(booking) {
++    await action.run(async () => {
++      await releaseBooking(RESOURCE_NETWORK_URL, session.token, booking.booking_id);
++      setToast("Rig released - it is available again");
++      await bookings.reload();
++    });
++  }
++
+   return (
+     <Screen>
+       <PageHeader title="Rig bookings" subtitle="Requests you've sent to rig owners." />
+       {!!bookings.error && <Alert>{bookings.error.message}</Alert>}
++      {!!action.error && <Alert>{action.error}</Alert>}
+ 
+       <Pills value={filter} onChange={setFilter} options={FILTERS.map((f) => ({ ...f, count: counts[f.value] }))} />
+ 
+@@ -67,8 +80,18 @@ export default function Bookings() {
+               <Body size={11} muted>{formatRelative(b.responded_at || b.created_at)}</Body>
+             </View>
+           </Row>
++          {b.status === "accepted" && (
++            <Button
++              title="Done with this rig - release it"
++              variant="light"
++              size="sm"
++              busy={action.busy}
++              onPress={() => release(b)}
++            />
++          )}
+         </Card>
+       ))}
++      <Toast message={toast} />
+     </Screen>
+   );
+ }
+diff --git a/apps/borewell-native/screens/contractor/ContractorJob.js b/apps/borewell-native/screens/contractor/ContractorJob.js
+index 11c1fc0..e6098c1 100644
+--- a/apps/borewell-native/screens/contractor/ContractorJob.js
++++ b/apps/borewell-native/screens/contractor/ContractorJob.js
+@@ -7,7 +7,7 @@ import { useState } from "react";
+ import { Linking, View } from "react-native";
+ import {
+   PAYMENTS_URL, PLATFORM_SPINE_URL, QUOTATION_URL, RESOURCE_NETWORK_URL,
+-  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult,
++  approveQuotation, confirmCashPayment, editQuotation, generateQuotation, getJob, getJobCompletionResult, releaseBooking,
+   getLatestQuotationForJob, listBookings, listPayments, logJobCompletion,
+   recordWalkInCash, rejectCashPayment, rejectQuotation, updateJobStatus,
+ } from "../../services/platform";
+@@ -16,6 +16,7 @@ import {
+   formatCoords, formatInr, jobTypeLabel, nextStage, shortId, stageIndex, stageTone,
+ } from "../../theme";
+ import { useAction, useAreaName, useLoad, useToast } from "../../lib/hooks";
++import { chain, useFieldRefs } from "../../lib/form";
+ import { useNav } from "../../lib/nav";
+ import { useSession } from "../../lib/session";
+ import { PageHeader } from "../../components/AppShell";
+@@ -58,6 +59,8 @@ export default function ContractorJob({ params }) {
+   const q = quote.data;
+   const jobBookings = (bookings.data || []).filter((b) => b.job_id === jobId);
+   const payment = (payments.data || []).find((p) => p.job_id === jobId);
++  // The rig the contractor has on this job right now (accepted, not yet freed).
++  const activeBooking = jobBookings.find((b) => b.status === "accepted");
+ 
+   async function handleAdvance() {
+     const next = nextStage(job.data.status);
+@@ -69,6 +72,17 @@ export default function ContractorJob({ params }) {
+     });
+   }
+ 
++  // Frees the rig as soon as the work is done, without waiting for the owner:
++  // it goes back on the available list and can be booked by someone else.
++  async function handleRelease() {
++    await action.run(async () => {
++      await releaseBooking(RESOURCE_NETWORK_URL, session.token, activeBooking.booking_id);
++      setSheet(null);
++      setToast("Rig released - it is available again");
++      await bookings.reload();
++    });
++  }
++
+   async function handleCash(confirmed) {
+     await action.run(async () => {
+       const call = confirmed ? confirmCashPayment : rejectCashPayment;
+@@ -145,8 +159,13 @@ export default function ContractorJob({ params }) {
+   // move on; the backend enforces it, this keeps the button from offering it.
+   const completionPending = atCompletion && !completion.data;
+   const walkIn = !!job.data.walk_in;
++  // An admin opens this same screen from the overview to look, not to act:
++  // the actions below belong to the contractor (the services refuse them for
++  // an admin anyway - this just doesn't offer buttons that can only fail).
++  const readOnly = session.role === "admin";
++  const closingOut = completionPending && !readOnly;
+   const awaitingDecision = !!q && (q.status === "draft" || q.status === "sent");
+-  const canRecordCash = walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
++  const canRecordCash = !readOnly && walkIn && q?.status === "approved" && (!payment || payment.status === "failed");
+ 
+   return (
+     <Screen>
+@@ -191,7 +210,9 @@ export default function ContractorJob({ params }) {
+           <View style={{ flex: 1 }} />
+           <Body size={13} muted dark>{STAGE_LABELS[job.data.status]}</Body>
+         </Row>
+-        {completionPending ? (
++        {readOnly ? (
++          <Body muted dark>Read-only view - the contractor moves this job along.</Body>
++        ) : completionPending ? (
+           <Body muted dark>Record the actual depth and cost below to move this job on.</Body>
+         ) : next ? (
+           <Button
+@@ -215,7 +236,8 @@ export default function ContractorJob({ params }) {
+ 
+         {quote.loading && !quote.data && <Loading label="Checking for a quotation…" />}
+ 
+-        {!q && !quote.loading && (
++        {!q && !quote.loading && readOnly && <Body muted size={14}>No quotation has been generated yet.</Body>}
++        {!q && !quote.loading && !readOnly && (
+           <>
+             <Body muted size={14}>
+               No quotation yet. Generating one uses your pricing rules and, inside a pilot area, the local
+@@ -276,7 +298,7 @@ export default function ContractorJob({ params }) {
+               <Amount size={24} color={colors.saffron}>{formatInr(q.total_estimate)}</Amount>
+             </View>
+ 
+-            {walkIn && awaitingDecision && (
++            {!readOnly && walkIn && awaitingDecision && (
+               <>
+                 <Alert tone="info">
+                   Show {job.data.customer_name || "the customer"} this price. Record their answer once they have
+@@ -292,23 +314,24 @@ export default function ContractorJob({ params }) {
+               <Body size={12} muted>Approved by you on the customer&apos;s behalf.</Body>
+             )}
+ 
+-            {(!walkIn || q.status !== "approved") && (
++            {/* A paid job's quotation is closed: money already moved against it. */}
++            {!readOnly && (!walkIn || q.status !== "approved") && payment?.status !== "completed" && (
+               <Button title={`Edit as v${q.version + 1}`} variant="light" size="sm" onPress={() => setSheet("edit")} />
+             )}
+           </>
+         )}
+       </Card>
+ 
+-      {completionPending && completion.error && (
++      {closingOut && completion.error && (
+         <Card>
+           <Alert>{completion.error.message}</Alert>
+           <Button title="Try again" variant="light" onPress={() => completion.reload()} />
+         </Card>
+       )}
+-      {completionPending && !completion.error && completion.loading && (
++      {closingOut && !completion.error && completion.loading && (
+         <Card><Loading label="Checking for a completion record…" /></Card>
+       )}
+-      {completionPending && !completion.error && !completion.loading && (
++      {closingOut && !completion.error && !completion.loading && (
+         <CompletionCard
+           jobId={jobId}
+           quote={q}
+@@ -352,7 +375,7 @@ export default function ContractorJob({ params }) {
+         {jobBookings.length === 0 ? (
+           <>
+             <Body muted dark size={14}>No rig requested for this site yet.</Body>
+-            <Button title="Find nearby rigs" variant="saffron" trailing onPress={() => navigate("contractor.rigs", { jobId })} />
++            {!readOnly && <Button title="Find nearby rigs" variant="saffron" trailing onPress={() => navigate("contractor.rigs", { jobId })} />}
+           </>
+         ) : (
+           <>
+@@ -372,7 +395,10 @@ export default function ContractorJob({ params }) {
+                 </Row>
+               </Inset>
+             ))}
+-            <Button title="Search again" variant="ghostDark" size="sm" onPress={() => navigate("contractor.rigs", { jobId })} />
++            {!readOnly && activeBooking && (
++              <Button title="Release rig" variant="saffron" size="sm" onPress={() => { action.setError(null); setSheet("release"); }} />
++            )}
++            {!readOnly && <Button title="Search again" variant="ghostDark" size="sm" onPress={() => navigate("contractor.rigs", { jobId })} />}
+           </>
+         )}
+       </Card>
+@@ -398,7 +424,7 @@ export default function ContractorJob({ params }) {
+             <Button title="Record cash received" variant="saffron" size="sm" onPress={() => setSheet("walkin-cash")} />
+           </>
+         )}
+-        {payment?.method === "cash" && payment.status === "pending" && (
++        {!readOnly && payment?.method === "cash" && payment.status === "pending" && (
+           <>
+             <Alert tone="info">
+               The customer is paying {formatInr(payment.amount)} in cash. Only confirm once the money is in your hand - this marks the job as paid.
+@@ -466,6 +492,16 @@ export default function ContractorJob({ params }) {
+         onConfirm={() => handleCash(false)}
+         onClose={() => setSheet(null)}
+       />
++      <Confirm
++        visible={sheet === "release"}
++        title="Release this rig?"
++        body="The rig goes back to the owner's available list and can be booked by others. Do this once the drilling is finished and the rig has left the site."
++        confirmLabel="Release rig"
++        busy={action.busy}
++        error={action.error}
++        onConfirm={handleRelease}
++        onClose={() => setSheet(null)}
++      />
+       <Confirm
+         visible={sheet === "advance"}
+         title={next ? `Move to ${STAGE_LABELS[next]}?` : ""}
+@@ -511,6 +547,7 @@ function CompletionCard({ jobId, quote, onDone }) {
+   const [depth, setDepth] = useState("");
+   const [cost, setCost] = useState("");
+   const [confirming, setConfirming] = useState(false);
++  const refs = useFieldRefs(2); // depth, cost
+ 
+   const valid = Number.isFinite(Number(depth)) && Number(depth) > 0
+     && Number.isFinite(Number(cost)) && Number(cost) > 0;
+@@ -519,6 +556,12 @@ function CompletionCard({ jobId, quote, onDone }) {
+     ? Number(depth) - Number(quote.estimated_depth_range.max_ft)
+     : 0;
+ 
++  function review() {
++    if (!valid) return;
++    action.setError(null);
++    setConfirming(true);
++  }
++
+   async function submit() {
+     await action.run(async () => {
+       await logJobCompletion(PLATFORM_SPINE_URL, session.token, jobId, {
+@@ -537,10 +580,10 @@ function CompletionCard({ jobId, quote, onDone }) {
+         Recorded once and never editable afterwards - variance against the approved quotation is computed at write time.
+       </Body>
+       <Field label="Actual depth drilled (ft)">
+-        <Input value={depth} onChangeText={setDepth} keyboardType="number-pad" placeholder="e.g. 468" />
++        <Input value={depth} onChangeText={setDepth} keyboardType="number-pad" placeholder="e.g. 468" {...chain(refs, 0, review)} />
+       </Field>
+       <Field label="Actual cost (₹)">
+-        <Input value={cost} onChangeText={setCost} keyboardType="decimal-pad" placeholder="e.g. 99500" />
++        <Input value={cost} onChangeText={setCost} keyboardType="decimal-pad" placeholder="e.g. 99500" {...chain(refs, 1, review)} />
+       </Field>
+       {overage > 0 && quote?.depth_overage_rate_per_ft && (
+         <Alert tone="info">
+@@ -548,7 +591,7 @@ function CompletionCard({ jobId, quote, onDone }) {
+         </Alert>
+       )}
+       {!!action.error && <Alert>{action.error}</Alert>}
+-      <Button title="Mark complete" disabled={!valid} onPress={() => { action.setError(null); setConfirming(true); }} />
++      <Button title="Mark complete" disabled={!valid} onPress={review} />
+       <Confirm
+         visible={confirming}
+         title="Mark this job complete?"
+@@ -567,6 +610,7 @@ function EditQuoteSheet({ visible, quote, onClose, onSaved }) {
+   const { session } = useSession();
+   const action = useAction();
+   const [items, setItems] = useState(() => quote.line_items.map((i) => ({ ...i, amount: String(i.amount) })));
++  const refs = useFieldRefs(items.length);
+ 
+   const subtotal = items.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+   const total = subtotal + Number(quote.margin_amount || 0);
+@@ -602,6 +646,7 @@ function EditQuoteSheet({ visible, quote, onClose, onSaved }) {
+             value={item.amount}
+             keyboardType="decimal-pad"
+             onChangeText={(value) => setItems((list) => list.map((it, idx) => (idx === i ? { ...it, amount: value } : it)))}
++            {...chain(refs, i, save)}
+           />
+         </Field>
+       ))}
+diff --git a/apps/borewell-native/screens/contractor/Setup.js b/apps/borewell-native/screens/contractor/Setup.js
+index 0f2d437..aa4e9ff 100644
+--- a/apps/borewell-native/screens/contractor/Setup.js
++++ b/apps/borewell-native/screens/contractor/Setup.js
+@@ -15,6 +15,7 @@ import {
+ } from "../../services/platform";
+ import { JOB_TYPES, PILOT_CENTER, colors, formatCoords, formatInr } from "../../theme";
+ import { clearAreaCache, useAction, useLoad, useToast } from "../../lib/hooks";
++import { chain, useFieldRefs } from "../../lib/form";
+ import { useSession } from "../../lib/session";
+ import { PageHeader } from "../../components/AppShell";
+ import SiteMap from "../../components/SiteMap";
+@@ -84,6 +85,10 @@ function PricingRules({ onToast }) {
+   const configured = new Set((rules.data || []).map((r) => r.job_type));
+   const preview = estimate(values);
+ 
++  // Tab order follows what is on screen: group by group.
++  const ordered = GROUPS.flatMap((group) => FIELDS.filter((f) => f.group === group));
++  const refs = useFieldRefs(ordered.length);
++
+   async function save() {
+     await action.run(async () => {
+       await upsertPricingRule(QUOTATION_URL, session.token, {
+@@ -122,6 +127,7 @@ function PricingRules({ onToast }) {
+                   value={values[f.key]}
+                   keyboardType="decimal-pad"
+                   onChangeText={(value) => setValue(f.key, value)}
++                  {...chain(refs, ordered.indexOf(f), save)}
+                 />
+               </Field>
+             ))}
+@@ -202,6 +208,7 @@ function ServiceAreas({ onToast }) {
+   // centre - SiteMap owns its centre after mount.
+   const [mapKey, setMapKey] = useState(0);
+   const action = useAction();
++  const refs = useFieldRefs(6); // name, district, state, radius, depth, band
+ 
+   const areas = useLoad(() => listServiceAreas(RESOURCE_NETWORK_URL, session.token), [session.token]);
+ 
+@@ -219,6 +226,7 @@ function ServiceAreas({ onToast }) {
+   }
+ 
+   async function save() {
++    if (!form.name || !form.estimated_water_depth_ft) return;
+     await action.run(async () => {
+       await upsertServiceArea(RESOURCE_NETWORK_URL, session.token, {
+         name: form.name,
+@@ -255,24 +263,24 @@ function ServiceAreas({ onToast }) {
+           Saving a name that already exists updates it rather than adding a duplicate.
+         </Body>
+         <Field label="Village / area name">
+-          <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Kallikudi" />
++          <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Kallikudi" {...chain(refs, 0, save)} />
+         </Field>
+         <Row gap={10}>
+           <View style={{ flex: 1 }}>
+             <Field label="District">
+-              <Input value={form.district} onChangeText={(v) => setForm({ ...form, district: v })} />
++              <Input value={form.district} onChangeText={(v) => setForm({ ...form, district: v })} {...chain(refs, 1, save)} />
+             </Field>
+           </View>
+           <View style={{ flex: 1 }}>
+             <Field label="State">
+-              <Input value={form.state} onChangeText={(v) => setForm({ ...form, state: v })} />
++              <Input value={form.state} onChangeText={(v) => setForm({ ...form, state: v })} {...chain(refs, 2, save)} />
+             </Field>
+           </View>
+         </Row>
+         <Row gap={10}>
+           <View style={{ flex: 1 }}>
+             <Field label="Radius (km)">
+-              <Input value={form.radius_km} keyboardType="decimal-pad" onChangeText={(v) => setForm({ ...form, radius_km: v })} />
++              <Input value={form.radius_km} keyboardType="decimal-pad" onChangeText={(v) => setForm({ ...form, radius_km: v })} {...chain(refs, 3, save)} />
+             </Field>
+           </View>
+           <View style={{ flex: 1 }}>
+@@ -281,6 +289,7 @@ function ServiceAreas({ onToast }) {
+                 value={form.estimated_water_depth_ft}
+                 keyboardType="number-pad"
+                 onChangeText={(v) => setForm({ ...form, estimated_water_depth_ft: v })}
++                {...chain(refs, 4, save)}
+               />
+             </Field>
+           </View>
+@@ -290,6 +299,7 @@ function ServiceAreas({ onToast }) {
+                 value={form.confidence_band_ft}
+                 keyboardType="number-pad"
+                 onChangeText={(v) => setForm({ ...form, confidence_band_ft: v })}
++                {...chain(refs, 5, save)}
+               />
+             </Field>
+           </View>
+diff --git a/apps/borewell-native/screens/contractor/WalkIn.js b/apps/borewell-native/screens/contractor/WalkIn.js
+index db659cf..81d75f6 100644
+--- a/apps/borewell-native/screens/contractor/WalkIn.js
++++ b/apps/borewell-native/screens/contractor/WalkIn.js
+@@ -13,6 +13,7 @@ import {
+ } from "../../services/platform";
+ import { JOB_TYPES, PILOT_CENTER, colors, formatCoords } from "../../theme";
+ import { useAction, useAreaName, useLoad } from "../../lib/hooks";
++import { chain, useFieldRefs } from "../../lib/form";
+ import { useNav } from "../../lib/nav";
+ import { useSession } from "../../lib/session";
+ import { PageHeader } from "../../components/AppShell";
+@@ -41,6 +42,7 @@ export default function WalkIn() {
+   const [pinned, setPinned] = useState(null);
+   const [jobType, setJobType] = useState("agricultural");
+   const [touched, setTouched] = useState(false);
++  const refs = useFieldRefs(2); // name, phone
+ 
+   const areas = useLoad(() => listServiceAreas(RESOURCE_NETWORK_URL, session.token), [session.token]);
+   const first = areas.data?.[0];
+@@ -82,6 +84,7 @@ export default function WalkIn() {
+             autoCapitalize="words"
+             maxLength={100}
+             testID="walkin-name"
++            {...chain(refs, 0, submit)}
+           />
+         </Field>
+         <Field
+@@ -96,6 +99,7 @@ export default function WalkIn() {
+             keyboardType="phone-pad"
+             maxLength={16}
+             testID="walkin-phone"
++            {...chain(refs, 1, submit)}
+           />
+         </Field>
+       </Card>
+diff --git a/apps/borewell-native/screens/customer/CustomerJob.js b/apps/borewell-native/screens/customer/CustomerJob.js
+index 6a6829d..cd4be03 100644
+--- a/apps/borewell-native/screens/customer/CustomerJob.js
++++ b/apps/borewell-native/screens/customer/CustomerJob.js
+@@ -157,6 +157,7 @@ export default function CustomerJob({ params }) {
+     await action.run(async () => {
+       const current = await ensurePayment();
+       await chooseCashPayment(PAYMENTS_URL, session.token, current.payment_id);
++      setConfirm(null);
+       await payments.reload();
+       setToast("Cash payment noted - hand it to your contractor");
+     });
+@@ -203,6 +204,80 @@ export default function CustomerJob({ params }) {
+       {!!quote.error && <Alert>{quote.error.message}</Alert>}
+       {!!action.error && <Alert>{action.error}</Alert>}
+ 
++      {/* The thing to act on sits straight under "Now", above the long quotation. */}
++      {approved && (
++        <Card>
++          <Row>
++            <Title size={20}>Payment</Title>
++            <View style={{ flex: 1 }} />
++            {payment ? <Badge tone={paymentTone(payment.status)}>{paymentLabel(payment.status)}</Badge> : <Badge>Not started</Badge>}
++          </Row>
++
++          {payment?.status === "completed" ? (
++            <Row gap={24}>
++              <KeyValue k="Paid" v={formatInr(payment.amount)} />
++              {!!payment.razorpay_payment_id && <KeyValue k="Reference" v={payment.razorpay_payment_id} />}
++            </Row>
++          ) : payment?.method === "cash" && payment.status === "pending" ? (
++            <>
++              <Amount>{formatInr(payment.amount)}</Amount>
++              <Alert tone="info">
++                You chose to pay in cash. Hand {formatInr(payment.amount)} to your contractor - the job moves on as soon as they confirm they have received it.
++              </Alert>
++              <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
++              <Button title="Pay online instead" variant="light" size="sm" busy={action.busy} onPress={handleSwitchToOnline} />
++            </>
++          ) : (
++            <>
++              <Amount>{formatInr(q.total_estimate)}</Amount>
++              {/* Always offered: choosing "Pay online" never locks cash out. */}
++              <Pills
++                value={method}
++                onChange={setMethod}
++                options={[{ value: "online", label: "Pay online" }, { value: "cash", label: "Pay cash" }]}
++              />
++              <Body size={14} muted>
++                {method === "cash"
++                  ? "Pay your contractor in cash. The payment counts only after your contractor confirms they received it."
++                  : "Pay with UPI, card or net banking. Your payment is confirmed by Razorpay, not by this screen."}
++              </Body>
++              {method === "cash" ? (
++                <Button
++                  title="Pay in cash"
++                  variant="saffron"
++                  size="lg"
++                  trailing
++                  busy={action.busy}
++                  onPress={() => (payment?.razorpay_order_id ? setConfirm("cash-switch") : handleChooseCash())}
++                />
++              ) : (
++                <Button
++                  title={action.busy ? "Opening…" : payment?.status === "pending" ? "Continue payment" : "Pay now"}
++                  variant="saffron"
++                  size="lg"
++                  trailing
++                  busy={action.busy}
++                  onPress={handlePay}
++                />
++              )}
++              {payment?.status === "pending" && !!payment.razorpay_order_id && (
++                <>
++                  <Alert tone="info">If you already paid, we are waiting for Razorpay to confirm it.</Alert>
++                  <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
++                </>
++              )}
++              {payment?.status === "failed" && (
++                <Alert>
++                  {payment.method === "cash"
++                    ? "Your contractor said they did not receive the cash. You can start a new payment."
++                    : "That attempt failed. You can try again."}
++                </Alert>
++              )}
++            </>
++          )}
++        </Card>
++      )}
++
+       {!q && !quote.loading && (
+         <Card>
+           <Row gap={12}>
+@@ -288,73 +363,6 @@ export default function CustomerJob({ params }) {
+         </Card>
+       )}
+ 
+-      {approved && (
+-        <Card>
+-          <Row>
+-            <Title size={20}>Payment</Title>
+-            <View style={{ flex: 1 }} />
+-            {payment ? <Badge tone={paymentTone(payment.status)}>{paymentLabel(payment.status)}</Badge> : <Badge>Not started</Badge>}
+-          </Row>
+-
+-          {payment?.status === "completed" ? (
+-            <Row gap={24}>
+-              <KeyValue k="Paid" v={formatInr(payment.amount)} />
+-              {!!payment.razorpay_payment_id && <KeyValue k="Reference" v={payment.razorpay_payment_id} />}
+-            </Row>
+-          ) : payment?.method === "cash" && payment.status === "pending" ? (
+-            <>
+-              <Amount>{formatInr(payment.amount)}</Amount>
+-              <Alert tone="info">
+-                You chose to pay in cash. Hand {formatInr(payment.amount)} to your contractor - the job moves on as soon as they confirm they have received it.
+-              </Alert>
+-              <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
+-              <Button title="Pay online instead" variant="light" size="sm" busy={action.busy} onPress={handleSwitchToOnline} />
+-            </>
+-          ) : (
+-            <>
+-              {!payment?.razorpay_order_id && (
+-                <Pills
+-                  value={method}
+-                  onChange={setMethod}
+-                  options={[{ value: "online", label: "Pay online" }, { value: "cash", label: "Pay cash" }]}
+-                />
+-              )}
+-              <Body size={14} muted>
+-                {method === "cash" && !payment?.razorpay_order_id
+-                  ? "Pay your contractor in cash. The payment counts only after your contractor confirms they received it."
+-                  : "Pay with UPI, card or net banking. Your payment is confirmed by Razorpay, not by this screen."}
+-              </Body>
+-              <Amount>{formatInr(q.total_estimate)}</Amount>
+-              {method === "cash" && !payment?.razorpay_order_id ? (
+-                <Button title="Pay in cash" variant="saffron" size="lg" trailing busy={action.busy} onPress={handleChooseCash} />
+-              ) : (
+-                <Button
+-                  title={action.busy ? "Opening…" : payment?.status === "pending" ? "Continue payment" : "Pay now"}
+-                  variant="saffron"
+-                  size="lg"
+-                  trailing
+-                  busy={action.busy}
+-                  onPress={handlePay}
+-                />
+-              )}
+-              {payment?.status === "pending" && !!payment.razorpay_order_id && (
+-                <>
+-                  <Alert tone="info">If you already paid, we are waiting for Razorpay to confirm it.</Alert>
+-                  <Button title="Check again" variant="light" size="sm" onPress={() => payments.reload()} />
+-                </>
+-              )}
+-              {payment?.status === "failed" && (
+-                <Alert>
+-                  {payment.method === "cash"
+-                    ? "Your contractor said they did not receive the cash. You can start a new payment."
+-                    : "That attempt failed. You can try again."}
+-                </Alert>
+-              )}
+-            </>
+-          )}
+-        </Card>
+-      )}
+-
+       {completion.data && (
+         <Card>
+           <Title size={20}>Final result</Title>
+@@ -405,6 +413,16 @@ export default function CustomerJob({ params }) {
+         onConfirm={handleReject}
+         onClose={() => setConfirm(null)}
+       />
++      <Confirm
++        visible={confirm === "cash-switch"}
++        title="Pay in cash instead?"
++        body="You already opened an online payment for this quote. If you have paid online, do not pay cash as well. Otherwise your cash payment replaces it - your contractor must confirm they received it."
++        confirmLabel="Pay cash instead"
++        busy={action.busy}
++        error={action.error}
++        onConfirm={handleChooseCash}
++        onClose={() => setConfirm(null)}
++      />
+       <RazorpaySheet order={checkout?.order} email={session.email} onResult={handleCheckoutResult} />
+       <Toast message={toast} />
+     </Screen>
+diff --git a/apps/borewell-native/screens/index.js b/apps/borewell-native/screens/index.js
+index d92549f..3863cda 100644
+--- a/apps/borewell-native/screens/index.js
++++ b/apps/borewell-native/screens/index.js
+@@ -16,6 +16,8 @@ import Bookings from "./contractor/Bookings";
+ import Setup from "./contractor/Setup";
+ import OwnerRequests from "./owner/OwnerRequests";
+ import OwnerFleet from "./owner/OwnerFleet";
++import AdminOverview from "./admin/AdminOverview";
++import AdminPeople from "./admin/AdminPeople";
+ 
+ export const SCREENS = {
+   "customer.home": { component: CustomerHome, title: "Your borewells" },
+@@ -32,6 +34,11 @@ export const SCREENS = {
+   "owner.requests": { component: OwnerRequests, title: "Requests" },
+   "owner.fleet": { component: OwnerFleet, title: "Fleet" },
+ 
++  "admin.overview": { component: AdminOverview, title: "Overview" },
++  "admin.people": { component: AdminPeople, title: "People" },
++  // The contractor's job screen, read-only for an admin (it checks the role).
++  "admin.job": { component: ContractorJob, title: "Job" },
++
+   account: { component: Account, title: "Account" },
+ };
+ 
+@@ -55,12 +62,16 @@ const OWNER_TABS = [
+   { route: "account", label: "You", icon: "user" },
+ ];
+ 
++const ADMIN_TABS = [
++  { route: "admin.overview", label: "Overview", icon: "home" },
++  { route: "admin.people", label: "People", icon: "briefcase" },
++  { route: "account", label: "You", icon: "user" },
++];
++
+ export const TABS_FOR_ROLE = {
+   customer: CUSTOMER_TABS,
+   contractor: CONTRACTOR_TABS,
+-  // No dedicated admin workspace exists yet - admins see the contractor
+-  // one, the same fallback the web app makes.
+-  admin: CONTRACTOR_TABS,
++  admin: ADMIN_TABS,
+   resource_owner: OWNER_TABS,
+ };
+ 
+@@ -73,4 +84,5 @@ export const TAB_FOR_ROUTE = {
+   "customer.job": "customer.home",
+   "contractor.job": "contractor.board",
+   "contractor.walkin": "contractor.board",
++  "admin.job": "admin.overview",
+ };
+diff --git a/apps/borewell-native/screens/owner/OwnerFleet.js b/apps/borewell-native/screens/owner/OwnerFleet.js
+index 5386229..f14d202 100644
+--- a/apps/borewell-native/screens/owner/OwnerFleet.js
++++ b/apps/borewell-native/screens/owner/OwnerFleet.js
+@@ -17,6 +17,7 @@ import {
+   formatInr, resourceStatusTone,
+ } from "../../theme";
+ import { useAction, useLoad, useToast } from "../../lib/hooks";
++import { chain, useFieldRefs } from "../../lib/form";
+ import { useSession } from "../../lib/session";
+ import { PageHeader } from "../../components/AppShell";
+ import SiteMap from "../../components/SiteMap";
+@@ -124,7 +125,10 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
+     resource.lat !== null && resource.lat !== undefined ? { lat: resource.lat, lng: resource.lng } : PILOT_CENTER
+   );
+ 
++  const refs = useFieldRefs(3); // name, vehicle, hourly rate (notes is multiline: Enter stays a newline)
++
+   async function save() {
++    if (!form.name.trim()) return;
+     await action.run(async () => {
+       const payload = {
+         resource_type: form.resource_type,
+@@ -171,13 +175,19 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
+         />
+       </Field>
+       <Field label="Name" hint="What a contractor will see">
+-        <Input value={form.name} onChangeText={(v) => setForm({ ...form, name: v })} placeholder="e.g. Tata 1613 DTH rig" />
++        <Input
++          value={form.name}
++          onChangeText={(v) => setForm({ ...form, name: v })}
++          placeholder="e.g. Tata 1613 DTH rig"
++          {...chain(refs, 0, save)}
++        />
+       </Field>
+       <Field label="Vehicle / description">
+         <Input
+           value={form.vehicle_type}
+           onChangeText={(v) => setForm({ ...form, vehicle_type: v })}
+           placeholder="e.g. Truck-mounted DTH 6.5”"
++          {...chain(refs, 1, save)}
+         />
+       </Field>
+       <Field label="Hourly rate (₹)" hint="Optional - can be set later">
+@@ -186,6 +196,7 @@ function ResourceSheet({ resource, token, onClose, onSaved }) {
+           keyboardType="number-pad"
+           onChangeText={(v) => setForm({ ...form, hourly_rate: v })}
+           placeholder="2800"
++          {...chain(refs, 2, save)}
+         />
+       </Field>
+       {!isNew && (
+diff --git a/apps/borewell-native/screens/owner/OwnerRequests.js b/apps/borewell-native/screens/owner/OwnerRequests.js
+index e0f1a68..d17981c 100644
+--- a/apps/borewell-native/screens/owner/OwnerRequests.js
++++ b/apps/borewell-native/screens/owner/OwnerRequests.js
+@@ -9,7 +9,7 @@
+ import { useState } from "react";
+ import { View } from "react-native";
+ import {
+-  RESOURCE_NETWORK_URL, acceptBooking, listBookings, listMyResources, rejectBooking,
++  RESOURCE_NETWORK_URL, acceptBooking, listBookings, listMyResources, rejectBooking, releaseBooking,
+ } from "../../services/platform";
+ import { BOOKING_STATUS_LABELS, bookingTone, formatInr, formatRelative } from "../../theme";
+ import { useAction, useLoad, useToast } from "../../lib/hooks";
+@@ -24,6 +24,7 @@ const FILTERS = [
+   { value: "pending", label: "Pending" },
+   { value: "accepted", label: "Accepted" },
+   { value: "rejected", label: "Declined" },
++  { value: "completed", label: "Finished" },
+   { value: "all", label: "All" },
+ ];
+ 
+@@ -62,6 +63,16 @@ export default function OwnerRequests() {
+     );
+   }
+ 
++  // The job is done and the rig is back: free it for the next request.
++  async function release(booking) {
++    await action.run(async () => {
++      await releaseBooking(RESOURCE_NETWORK_URL, session.token, booking.booking_id);
++      setSelected(null);
++      setToast("Rig is available again");
++      await Promise.all([bookings.reload(), resources.reload({ quiet: true })]);
++    });
++  }
++
+   const chosen = selected ? all.find((b) => b.booking_id === selected) : null;
+   const chosenResource = chosen ? resourceFor(chosen) : null;
+ 
+@@ -139,6 +150,13 @@ export default function OwnerRequests() {
+                 onPress={() => respond(chosen, true)}
+               />
+             </Row>
++          ) : chosen?.status === "accepted" ? (
++            <Button
++              title={action.busy ? "Working…" : "Job finished - mark rig available"}
++              variant="saffron"
++              busy={action.busy}
++              onPress={() => release(chosen)}
++            />
+           ) : null
+         }
+       >
+diff --git a/apps/borewell-native/services/demo.js b/apps/borewell-native/services/demo.js
+index 9187b2f..04b21c2 100644
+--- a/apps/borewell-native/services/demo.js
++++ b/apps/borewell-native/services/demo.js
+@@ -95,9 +95,10 @@ function money(n) {
+ // ---------------------------------------------------------------- seed data
+ 
+ const users = [
+-  { id: uuid("11111111-1111-4111-8111-111111111111"), email: "selvi@demo.in", role: "customer" },
+-  { id: uuid("22222222-2222-4222-8222-222222222222"), email: "senthil@demo.in", role: "contractor" },
+-  { id: uuid("33333333-3333-4333-8333-333333333333"), email: "murugan@demo.in", role: "resource_owner" },
++  { id: uuid("11111111-1111-4111-8111-111111111111"), email: "selvi@demo.in", role: "customer", created_at: iso(now - 30 * DAY) },
++  { id: uuid("22222222-2222-4222-8222-222222222222"), email: "senthil@demo.in", role: "contractor", created_at: iso(now - 29 * DAY) },
++  { id: uuid("33333333-3333-4333-8333-333333333333"), email: "murugan@demo.in", role: "resource_owner", created_at: iso(now - 28 * DAY) },
++  { id: uuid("55555555-5555-4555-8555-555555555555"), email: "admin@demo.in", role: "admin", created_at: iso(now - 40 * DAY) },
+ ];
+ const [CUSTOMER, CONTRACTOR, OWNER] = users;
+ const OTHER_OWNER = uuid("44444444-4444-4444-8444-444444444444");
+@@ -344,19 +345,41 @@ async function handle(method, path, body, headers) {
+ 
+   // --- auth
+   if (path === "/v1/auth/register" && method === "POST") {
+-    const existing = users.find((u) => u.email === body.email);
+-    const user = existing || { id: uuid(), email: body.email, role: body.role };
++    const email = String(body.email).trim().toLowerCase();
++    const existing = users.find((u) => u.email === email);
++    const user = existing || { id: uuid(), email, role: body.role, created_at: iso(Date.now()) };
+     if (!existing) users.push(user);
+     return ok({ access_token: token(user), role: user.role }, 201);
+   }
+   if (path === "/v1/auth/login" && method === "POST") {
+     const user = users.find((u) => u.email.toLowerCase() === String(body.email).toLowerCase());
+-    if (!user) return fail(401, "INVALID_CREDENTIALS", "No demo account with that email. Try selvi@demo.in, senthil@demo.in or murugan@demo.in.");
++    if (!user) return fail(401, "INVALID_CREDENTIALS", "No demo account with that email. Try selvi@demo.in, senthil@demo.in, murugan@demo.in or admin@demo.in.");
+     return ok({ access_token: token(user), role: user.role });
+   }
+ 
+   if (!me) return fail(401, "MISSING_TOKEN", "Authorization token is required.");
+ 
++  // --- admin: accounts (the real service is platform-spine's /v1/admin/*)
++  if (seg[1] === "admin") {
++    if (me.role !== "admin") return fail(403, "FORBIDDEN", "This action requires one of roles: admin.");
++    if (path.split("?")[0] === "/v1/admin/users" && method === "GET") {
++      const role = new URLSearchParams(path.split("?")[1] || "").get("role");
++      const list = users
++        .filter((u) => !role || u.role === role)
++        .map((u) => ({ user_id: u.id, email: u.email, phone: u.phone || null, role: u.role, created_at: u.created_at || null }));
++      return ok(list.sort((a, b) => (String(a.created_at) < String(b.created_at) ? 1 : -1)));
++    }
++    if (path === "/v1/admin/contractors" && method === "POST") {
++      const email = String(body.email || "").trim().toLowerCase();
++      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(422, "VALIDATION_ERROR", "email is not a valid email address");
++      if (String(body.password || "").length < 8) return fail(422, "VALIDATION_ERROR", "password must be at least 8 characters");
++      if (users.some((u) => u.email === email)) return fail(409, "EMAIL_TAKEN", "An account with this email already exists.");
++      const user = { id: uuid(), email, role: "contractor", phone: body.phone || null, created_at: iso(Date.now()) };
++      users.push(user);
++      return ok({ user_id: user.id, email, phone: user.phone, role: "contractor", created_at: user.created_at }, 201);
++    }
++  }
++
+   // --- jobs
+   if (path === "/v1/jobs" && method === "POST") {
+     const job = {
+@@ -399,6 +422,7 @@ async function handle(method, path, body, headers) {
+     return ok(job, 201);
+   }
+   if (path === "/v1/jobs" && method === "GET") {
++    if (me.role === "resource_owner") return fail(403, "FORBIDDEN", "This action requires one of roles: customer, contractor, admin.");
+     const visible = me.role === "customer" ? jobs.filter((j) => j.customer_id === me.id) : jobs;
+     return ok([...visible].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
+   }
+@@ -436,6 +460,7 @@ async function handle(method, path, body, headers) {
+       completed_at: iso(Date.now()),
+     };
+     completions.push(record);
++    releaseJobBookings(job.job_id); // job.completed frees the rigs booked for it
+     // The customer usually paid long before this point (see settleDemoPayment).
+     if (payments.some((p) => p.job_id === job.job_id && p.status === "completed")) job.status = "payment";
+     return ok(record, 201);
+@@ -521,6 +546,10 @@ async function handle(method, path, body, headers) {
+   if (seg[1] === "resources" && seg.length === 3 && method === "PATCH") {
+     const r = resources.find((x) => x.resource_id === seg[2]);
+     Object.assign(r, body, { hourly_rate: body.hourly_rate ? money(body.hourly_rate) : r.hourly_rate });
++    if (body.status === "available") {
++      // Owner says it is free: the accepted booking must not keep blocking it.
++      bookings.filter((b) => b.resource_id === r.resource_id && b.status === "accepted").forEach((b) => { b.status = "completed"; });
++    }
+     return ok(r);
+   }
+   if (path === "/v1/resources/match" && method === "POST") {
+@@ -579,6 +608,22 @@ async function handle(method, path, body, headers) {
+     return ok(booking);
+   }
+ 
++  if (seg[1] === "bookings" && seg[3] === "release" && method === "POST") {
++    if (me.role !== "contractor" && me.role !== "resource_owner") {
++      return fail(403, "FORBIDDEN", "This action requires one of roles: resource_owner, contractor.");
++    }
++    const booking = bookings.find((b) => b.booking_id === seg[2]);
++    if (!booking) return fail(404, "BOOKING_NOT_FOUND", "No booking request with this ID exists.");
++    const party = me.role === "resource_owner" ? booking.owner_id : booking.contractor_id;
++    if (party !== me.id) return fail(403, "FORBIDDEN", "You can only release your own bookings.");
++    if (booking.status === "completed") return ok(booking);
++    if (booking.status !== "accepted") {
++      return fail(409, "BOOKING_NOT_ACTIVE", `Only an accepted booking can be released; this one is '${booking.status}'.`);
++    }
++    releaseBooking(booking);
++    return ok(booking);
++  }
++
+   // --- service areas
+   if (path === "/v1/service-areas" && method === "GET") return ok(serviceAreas);
+   if (path === "/v1/service-areas" && method === "POST") {
+@@ -596,6 +641,7 @@ async function handle(method, path, body, headers) {
+ 
+   // --- payments
+   if (path === "/v1/payments" && method === "GET") {
++    if (me.role === "resource_owner") return fail(403, "FORBIDDEN", "This action requires one of roles: customer, contractor, admin.");
+     const mine = me.role === "customer"
+       ? payments.filter((p) => jobs.find((j) => j.job_id === p.job_id)?.customer_id === me.id)
+       : payments;
+@@ -676,6 +722,7 @@ async function handle(method, path, body, headers) {
+     if (payment.razorpay_order_id !== body.razorpay_order_id) {
+       return fail(400, "ORDER_MISMATCH", "That Razorpay order does not belong to this payment.");
+     }
++    payment.method = "online"; // captured money is the truth, whatever was picked before
+     settleDemoPayment(payment, body.razorpay_payment_id);
+     return ok(payment);
+   }
+@@ -702,7 +749,8 @@ async function handle(method, path, body, headers) {
+     }
+     if (payment.status !== "pending") return fail(409, "PAYMENT_NOT_PENDING", `Payment status is '${payment.status}', not 'pending'.`);
+     if (seg[3] === "choose-cash") {
+-      if (payment.razorpay_order_id) return fail(409, "ONLINE_ORDER_OPEN", "An online payment is already open for this quotation.");
++      // Allowed even after "Pay online" was opened: the open order stays, and
++      // if it is paid anyway the real service logs a double settlement.
+       payment.method = "cash";
+     } else {
+       payment.method = "online";
+@@ -718,6 +766,17 @@ async function handle(method, path, body, headers) {
+   return fail(404, "NOT_FOUND", `Demo backend has no route for ${method} ${path}`);
+ }
+ 
++/** The rig is done with: end the booking and make the rig available again. */
++function releaseBooking(booking) {
++  booking.status = "completed";
++  const rig = resources.find((r) => r.resource_id === booking.resource_id);
++  if (rig) rig.status = "available";
++}
++
++function releaseJobBookings(jobId) {
++  bookings.filter((b) => b.job_id === jobId && b.status === "accepted").forEach(releaseBooking);
++}
++
+ function latestQuote(jobId) {
+   const forJob = quotations.filter((q) => q.job_id === jobId);
+   return forJob.length ? forJob[forJob.length - 1] : null;
+@@ -752,11 +811,12 @@ export function installMockApi() {
+       return fail(500, "DEMO_ERROR", err.message);
+     }
+   };
+-  console.info("Borewell demo mode: using the in-memory backend. Sign in with selvi@demo.in, senthil@demo.in or murugan@demo.in (any password).");
++  console.info("Borewell demo mode: using the in-memory backend. Sign in with selvi@demo.in, senthil@demo.in, murugan@demo.in or admin@demo.in (any password).");
+ }
+ 
+ export const DEMO_ACCOUNTS = [
+   { email: "selvi@demo.in", label: "Customer" },
+   { email: "senthil@demo.in", label: "Contractor" },
+   { email: "murugan@demo.in", label: "Rig owner" },
++  { email: "admin@demo.in", label: "Admin" },
+ ];
+diff --git a/apps/borewell-native/services/platform.js b/apps/borewell-native/services/platform.js
+index d4a0f74..ccc1b90 100644
+--- a/apps/borewell-native/services/platform.js
++++ b/apps/borewell-native/services/platform.js
+@@ -156,6 +156,24 @@ export async function updateJobStatus(platformSpineUrl, token, jobId, newStatus)
+   });
+ }
+ 
++// --- platform-spine: administration (admin only) ---
++
++export async function listUsers(platformSpineUrl, token, { role, limit } = {}) {
++  const params = new URLSearchParams();
++  if (role) params.set("role", role);
++  if (limit) params.set("limit", String(limit));
++  const query = params.toString();
++  return request(platformSpineUrl, `/v1/admin/users${query ? `?${query}` : ""}`, { token });
++}
++
++export async function createContractor(platformSpineUrl, token, { email, password, phone }) {
++  return request(platformSpineUrl, "/v1/admin/contractors", {
++    method: "POST",
++    token,
++    body: { email, password, phone: phone || undefined },
++  });
++}
++
+ // --- quotation: pricing rules (contractor only) ---
+ 
+ export async function upsertPricingRule(quotationUrl, token, rule) {
+@@ -301,6 +319,10 @@ export async function acceptBooking(resourceNetworkUrl, token, bookingId) {
+   });
+ }
+ 
++export async function releaseBooking(resourceNetworkUrl, token, bookingId) {
++  return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/release`, { method: "POST", token });
++}
++
+ export async function rejectBooking(resourceNetworkUrl, token, bookingId) {
+   return request(resourceNetworkUrl, `/v1/bookings/${bookingId}/reject`, {
+     method: "POST",
+diff --git a/apps/borewell-native/theme.js b/apps/borewell-native/theme.js
+index 20befe7..3b9eb9d 100644
+--- a/apps/borewell-native/theme.js
++++ b/apps/borewell-native/theme.js
+@@ -155,10 +155,11 @@ export const BOOKING_STATUS_LABELS = {
+   accepted: "Accepted",
+   rejected: "Declined",
+   cancelled: "Cancelled",
++  completed: "Completed",
+ };
+ 
+ export function bookingTone(status) {
+-  return { pending: "saffron", accepted: "green", rejected: "red", cancelled: "neutral" }[status] || "neutral";
++  return { pending: "saffron", accepted: "green", rejected: "red", cancelled: "neutral", completed: "neutral" }[status] || "neutral";
+ }
+ 
+ // --- formatting ----------------------------------------------------------
+-- 
+2.43.0
+
+
+From 84e57f0fb8e54d645727a35fbb2d89c5fbf31022 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 22:19:41 +0530
+Subject: [PATCH 6/6] borewell-native: hide rig booking card in the admin's
+ read-only job view
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHz41VwRigfURYpC97T6Az
+---
+ apps/borewell-native/screens/contractor/ContractorJob.js | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/apps/borewell-native/screens/contractor/ContractorJob.js b/apps/borewell-native/screens/contractor/ContractorJob.js
+index e6098c1..22acbf4 100644
+--- a/apps/borewell-native/screens/contractor/ContractorJob.js
++++ b/apps/borewell-native/screens/contractor/ContractorJob.js
+@@ -364,6 +364,9 @@ export default function ContractorJob({ params }) {
+         </Card>
+       )}
+ 
++      {/* Bookings are scoped to the contractor who made them: an admin gets 403
++          and would otherwise see a false "no rig requested". */}
++      {!readOnly && (
+       <Card dark>
+         <Row>
+           <Title size={20} dark>Rig booking</Title>
+@@ -402,6 +405,7 @@ export default function ContractorJob({ params }) {
+           </>
+         )}
+       </Card>
++      )}
+ 
+       <Card>
+         <Row>
+-- 
+2.43.0
+
