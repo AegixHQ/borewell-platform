@@ -34,6 +34,11 @@ class Payment(Base):
     job_id = Column(String(36), nullable=False, index=True)
     quotation_id = Column(String(36), nullable=False, index=True)
     customer_id = Column(String(36), nullable=False, index=True)
+    # The contractor who quoted the job, copied from the quotation when the
+    # payment is opened: it is what lets a contractor see and settle only their
+    # own jobs' payments. Null on rows created before this column existed -
+    # those are resolved through the quotation service on first use.
+    contractor_id = Column(String(36), nullable=True, index=True)
     amount = Column(MONEY, nullable=False)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
     status = Column(

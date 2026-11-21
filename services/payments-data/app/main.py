@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app import events, models, schemas
 from app.database import get_db
-from app.deps import get_current_claims, require_role
+from app.deps import require_role
 from app.gateway.razorpay_client import (
     RazorpayApiError,
     RazorpayNotConfigured,
@@ -170,6 +170,10 @@ def get_quotation_fetcher():
     return fetch_quotation
 
 
+def _text_or_none(value) -> str | None:
+    return str(value) if value else None
+
+
 def _payment_to_response(p: models.Payment) -> schemas.PaymentResponse:
     return schemas.PaymentResponse(
         payment_id=p.id,
@@ -314,7 +318,7 @@ def create_payment(
     if existing:
         return _idempotent_replay(existing, claims, payload)
 
-    _checked_quotation(request, payload, quotation_fetcher)
+    quotation = _checked_quotation(request, payload, quotation_fetcher)
 
     # One live payment per quotation. A fresh idempotency key must not open a
     # second charge for something already paid, or while a checkout is open.
@@ -347,6 +351,7 @@ def create_payment(
         job_id=str(payload.job_id),
         quotation_id=str(payload.quotation_id),
         customer_id=claims["sub"],
+        contractor_id=_text_or_none(quotation.get("contractor_id")),
         amount=payload.amount,
         idempotency_key=payload.idempotency_key,
         status="pending",
@@ -470,6 +475,7 @@ def record_walk_in_cash(
         job_id=str(payload.job_id),
         quotation_id=str(payload.quotation_id),
         customer_id=str(customer_id),
+        contractor_id=_text_or_none(quotation.get("contractor_id")),
         amount=payload.amount,
         idempotency_key=payload.idempotency_key,
         status="completed",
@@ -495,20 +501,18 @@ def record_walk_in_cash(
 @app.get("/v1/payments/{payment_id}", response_model=schemas.PaymentResponse)
 def get_payment(
     payment_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("customer", "contractor", "admin")),
+    quotation_fetcher=Depends(get_quotation_fetcher),
 ):
-    payment = db.query(models.Payment).filter(models.Payment.id == str(payment_id)).first()
-    if not payment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "PAYMENT_NOT_FOUND", "message": "No payment with this ID exists."},
-        )
+    payment = _get_payment_or_404(db, payment_id)
     if claims["role"] == "customer" and payment.customer_id != claims["sub"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "You can only view your own payments."},
         )
+    _require_payment_contractor(request, db, payment, claims, quotation_fetcher)
     return _payment_to_response(payment)
 
 
@@ -522,6 +526,11 @@ def list_payments(
     query = db.query(models.Payment)
     if claims["role"] == "customer":
         query = query.filter(models.Payment.customer_id == claims["sub"])
+    elif claims["role"] == "contractor":
+        # Their own jobs only. Rows from before contractor_id existed have it
+        # null and are not listed; they are still reachable by id, where the
+        # quotation settles ownership (_require_payment_contractor).
+        query = query.filter(models.Payment.contractor_id == claims["sub"])
     return [_payment_to_response(p) for p in query.order_by(models.Payment.created_at.desc()).all()]
 
 
@@ -620,6 +629,46 @@ def _get_payment_or_404(db: Session, payment_id: uuid.UUID) -> models.Payment:
     return payment
 
 
+def _require_payment_contractor(
+    request: Request, db: Session, payment: models.Payment, claims: dict, quotation_fetcher
+) -> None:
+    """A contractor may touch only the payments of jobs they quoted (admins and
+    customers are checked by their own rules). The payment remembers its
+    contractor; for a row from before that was recorded, ask the quotation
+    service - with the CALLER's token, so it refuses a stranger itself - and
+    remember the answer."""
+    if claims["role"] != "contractor":
+        return
+    owner = payment.contractor_id
+    if owner is None:
+        try:
+            quotation = quotation_fetcher(
+                payment.quotation_id, request.headers.get("Authorization", "")
+            )
+        except (QuotationNotFound, QuotationAccessDenied):
+            quotation = {}
+        except QuotationServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": "QUOTATION_SERVICE_UNAVAILABLE",
+                    "message": f"Could not check who owns this payment: {exc}",
+                },
+            )
+        owner = _text_or_none(quotation.get("contractor_id"))
+        if owner == claims["sub"]:
+            payment.contractor_id = owner
+            db.commit()
+    if owner != claims["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "You can only manage payments for jobs you quoted.",
+            },
+        )
+
+
 def _own_pending_payment(db: Session, payment_id: uuid.UUID, claims: dict) -> models.Payment:
     payment = _get_payment_or_404(db, payment_id)
     if payment.customer_id != claims["sub"]:
@@ -698,14 +747,18 @@ def choose_online(
 @app.post("/v1/payments/{payment_id}/confirm-cash", response_model=schemas.PaymentResponse)
 def confirm_cash(
     payment_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("contractor", "admin")),
+    quotation_fetcher=Depends(get_quotation_fetcher),
 ):
     """A contractor (or admin) confirms they received the cash. This is the
     only way a cash payment becomes 'completed', and it is what moves the job
     on (the same payment.completed event the online path fires). Repeating
-    the call is harmless."""
+    the call is harmless. A contractor can confirm only the cash for jobs they
+    quoted."""
     payment = _get_payment_or_404(db, payment_id)
+    _require_payment_contractor(request, db, payment, claims, quotation_fetcher)
     if payment.method != "cash":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -731,12 +784,16 @@ def confirm_cash(
 @app.post("/v1/payments/{payment_id}/reject-cash", response_model=schemas.PaymentResponse)
 def reject_cash(
     payment_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     claims: dict = Depends(require_role("contractor", "admin")),
+    quotation_fetcher=Depends(get_quotation_fetcher),
 ):
     """The contractor did not receive the cash. The payment is closed as
-    failed, and the customer can start a new one (online or cash)."""
+    failed, and the customer can start a new one (online or cash). Only for
+    jobs the contractor quoted."""
     payment = _get_payment_or_404(db, payment_id)
+    _require_payment_contractor(request, db, payment, claims, quotation_fetcher)
     if payment.method != "cash":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -35,7 +35,17 @@ def make_token(user_id: str, role: str) -> str:
     )
 
 
-def fake_quotation_fetcher(status="approved", total_estimate=Decimal("95450.00"), job_id=None):
+def contractor_uuid(label: str = "contractor-1") -> str:
+    """The id make_token(label, "contractor") puts in the token's sub."""
+    return str(uuid.uuid5(_NAMESPACE, label))
+
+
+def fake_quotation_fetcher(
+    status="approved",
+    total_estimate=Decimal("95450.00"),
+    job_id=None,
+    contractor_label="contractor-1",
+):
     """Stand-in for the real quotation_client.fetch_quotation call, so
     tests exercise the amount/approval/ownership-checking logic in main.py
     without needing a live quotation service or mocking httpx internals.
@@ -54,6 +64,7 @@ def fake_quotation_fetcher(status="approved", total_estimate=Decimal("95450.00")
             "job_id": resolved_job_id,
             "status": status,
             "total_estimate": total_estimate,
+            "contractor_id": contractor_uuid(contractor_label),
         }
 
     return _fetch

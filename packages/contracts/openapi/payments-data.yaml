@@ -41,7 +41,7 @@ paths:
         '502':
           description: Could not reach the quotation service to verify the quotation
     get:
-      summary: List payments visible to the current user (own payments for customers, all for contractor/admin)
+      summary: List payments visible to the current user (a customer's own, a contractor's for jobs they quoted, all for admin; rig owners are refused)
       responses:
         '200':
           description: Payment list
@@ -67,7 +67,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Payment'
         '403':
-          description: Not the owning customer
+          description: Not the owning customer, not the contractor who quoted the job, or a rig owner
         '404':
           description: Payment not found
   /v1/payments/{payment_id}/confirm:
@@ -220,7 +220,7 @@ paths:
         - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: Payment (completed), content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
-        '403': { description: Caller is not a contractor or admin }
+        '403': { description: Caller is not a contractor or admin, or is a contractor who did not quote this job }
         '404': { description: Payment not found }
         '409': { description: "Not a cash payment (NOT_A_CASH_PAYMENT) or not pending (PAYMENT_NOT_PENDING)" }
   /v1/payments/{payment_id}/reject-cash:
@@ -232,7 +232,7 @@ paths:
         - { name: payment_id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: Payment, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentResponse' } } } }
-        '403': { description: Caller is not a contractor or admin }
+        '403': { description: Caller is not a contractor or admin, or is a contractor who did not quote this job }
         '404': { description: Payment not found }
         '409': { description: "Not a cash payment (NOT_A_CASH_PAYMENT) or already completed (PAYMENT_ALREADY_COMPLETED)" }
   /v1/payments/{payment_id}/verify:
