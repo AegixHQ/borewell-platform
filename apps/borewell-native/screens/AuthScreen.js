@@ -145,10 +145,7 @@ export default function AuthScreen() {
                 onChangeText={(value) => { setPhone(value); clearFieldError("phone"); }}
                 placeholder="+91 "
                 keyboardType="phone-pad"
-<<<<<<< HEAD
-=======
                 {...chain(order, 1, submit)}
->>>>>>> origin/main
               />
             </Field>
           )}
