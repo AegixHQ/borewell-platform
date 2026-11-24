@@ -8,11 +8,11 @@
     "expo": "~57.0.33",
     "expo-secure-store": "^57.0.4",
     "expo-status-bar": "~57.0.1",
-    "react": "19.2.3",
-    "react-dom": "^19.2.3",
-    "react-native": "0.86.3",
-    "react-native-web": "^0.21.2",
-    "react-native-webview": "^13.16.1"
+    "react": "19.3.1",
+    "react-dom": "^19.3.1",
+    "react-native": "0.88.1",
+    "react-native-web": "^0.21.4",
+    "react-native-webview": "^13.17.0"
   },
   "scripts": {
     "start": "expo start",
